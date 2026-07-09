@@ -43,7 +43,7 @@ Jika anda tertarik menerjemahkan Veyon pada bahasa lokal Anda atau bahasa lain a
     </message>
     <message>
         <source>About Veyon %1</source>
-        <translation type="unfinished"/>
+        <translation>Tentang Veyon %1</translation>
     </message>
 </context>
 <context>
@@ -137,7 +137,7 @@ Jika anda tertarik menerjemahkan Veyon pada bahasa lokal Anda atau bahasa lain a
     <name>AccessControlProvider</name>
     <message>
         <source>Provider for access control features</source>
-        <translation type="unfinished"/>
+        <translation>Penyedia fitur kontrol akses</translation>
     </message>
 </context>
 <context>
@@ -252,7 +252,7 @@ Jika anda tertarik menerjemahkan Veyon pada bahasa lokal Anda atau bahasa lain a
     </message>
     <message>
         <source>Local computer is already being accessed</source>
-        <translation type="unfinished"/>
+        <translation>Komputer lokal sudah diakses</translation>
     </message>
 </context>
 <context>
@@ -303,7 +303,7 @@ Jika anda tertarik menerjemahkan Veyon pada bahasa lokal Anda atau bahasa lain a
     </message>
     <message>
         <source>There is no matching rule with a valid action. The access is therefore denied.</source>
-        <translation type="unfinished"/>
+        <translation>Tidak ada aturan yang cocok dengan tindakan yang valid. Oleh karena itu aksesnya ditolak.</translation>
     </message>
 </context>
 <context>
@@ -418,7 +418,9 @@ Kunci publik digunakan pada komputer klien untuk mengautentikasi permintaan kone
         <source>Please enter the name of the user group or role for which to import the authentication key.
 
 Make sure that the names of the keys belonging to each other are identical on all computers.</source>
-        <translation type="unfinished"/>
+        <translation>Silakan masukkan nama grup pengguna atau peran yang akan diimpor kunci autentikasinya.
+
+Pastikan nama kunci milik satu sama lain sama di semua komputer.</translation>
     </message>
 </context>
 <context>
@@ -596,7 +598,7 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>This command creates a new authentication key pair with name &lt;NAME&gt; and saves private and public key to the configured key directories. The parameter must be a name for the key, which may only contain letters.</source>
-        <translation type="unfinished"/>
+        <translation>Perintah ini membuat pasangan kunci autentikasi baru dengan nama &lt;NAME&gt; dan menyimpan kunci pribadi dan publik ke direktori kunci yang dikonfigurasi. Parameternya harus berupa nama kunci, yang hanya boleh berisi huruf.</translation>
     </message>
     <message>
         <source>KEY</source>
@@ -604,7 +606,7 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>This command deletes the authentication key &lt;KEY&gt; from the configured key directory. Please note that a key can&apos;t be recovered once it has been deleted.</source>
-        <translation type="unfinished"/>
+        <translation>Perintah ini menghapus kunci otentikasi &lt;KEY&gt; dari direktori kunci yang dikonfigurasi. Harap dicatat bahwa kunci tidak dapat dipulihkan setelah dihapus.</translation>
     </message>
     <message>
         <source>FILE</source>
@@ -612,15 +614,15 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>This command exports the authentication key &lt;KEY&gt; to &lt;FILE&gt;. If &lt;FILE&gt; is not specified a name will be constructed from name and type of &lt;KEY&gt;.</source>
-        <translation type="unfinished"/>
+        <translation>Perintah ini mengekspor kunci otentikasi &lt;KEY&gt; ke &lt;FILE&gt;. Jika &lt;FILE&gt; tidak ditentukan, nama akan dibuat dari nama dan tipe &lt;KEY&gt;.</translation>
     </message>
     <message>
         <source>This command extracts the public key part from the private key &lt;KEY&gt; and saves it as the corresponding public key. When setting up another master computer, it is therefore sufficient to transfer the private key only. The public key can then be extracted.</source>
-        <translation type="unfinished"/>
+        <translation>Perintah ini mengekstrak bagian kunci publik dari kunci privat &lt;KEY&gt; dan menyimpannya sebagai kunci publik yang sesuai. Saat menyiapkan komputer master lain, cukup mentransfer kunci privat saja. Kunci publik kemudian dapat diekstraksi.</translation>
     </message>
     <message>
         <source>This command imports the authentication key &lt;KEY&gt; from &lt;FILE&gt;. If &lt;FILE&gt; is not specified a name will be constructed from name and type of &lt;KEY&gt;.</source>
-        <translation type="unfinished"/>
+        <translation>Perintah ini mengimpor kunci otentikasi &lt;KEY&gt; dari &lt;FILE&gt;. Jika &lt;FILE&gt; tidak ditentukan, nama akan dibuat dari nama dan tipe &lt;KEY&gt;.</translation>
     </message>
     <message>
         <source>This command lists all available authentication keys in the configured key directory. If the option &quot;%1&quot; is specified a table with key details will be displayed instead. Some details might be missing if a key is not accessible e.g. due to the lack of read permissions.</source>
@@ -706,11 +708,11 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>Move selected computer up</source>
-        <translation type="unfinished"/>
+        <translation>Pindahkan komputer yang dipilih ke atas</translation>
     </message>
     <message>
         <source>Move selected computer down</source>
-        <translation type="unfinished"/>
+        <translation>Pindahkan komputer yang dipilih ke bawah</translation>
     </message>
     <message>
         <source>Name</source>
@@ -734,11 +736,11 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>Move selected location up</source>
-        <translation type="unfinished"/>
+        <translation>Pindahkan lokasi yang dipilih ke atas</translation>
     </message>
     <message>
         <source>Move selected location down</source>
-        <translation type="unfinished"/>
+        <translation>Pindahkan lokasi yang dipilih ke bawah</translation>
     </message>
     <message>
         <source>The import of CSV files is possible through the command line interface. For more information, see the &lt;a href=&quot;https://docs.veyon.io/en/latest/admin/cli.html#network-object-directory&quot;&gt;online documentation&lt;/a&gt;.</source>
@@ -825,7 +827,7 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>Exports objects to the specified text file using the given format string containing one or multiple placeholders. Valid placeholders are: %1</source>
-        <translation type="unfinished"/>
+        <translation>Mengekspor objek ke file teks tertentu menggunakan string format tertentu yang berisi satu atau beberapa placeholder. Placeholder yang valid adalah: %1</translation>
     </message>
     <message>
         <source>Export all objects to a CSV file</source>
@@ -833,7 +835,7 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>Export all computers in a specific location to a CSV file</source>
-        <translation type="unfinished"/>
+        <translation>Ekspor semua komputer di lokasi tertentu ke file CSV</translation>
     </message>
     <message>
         <source>TYPE</source>
@@ -845,23 +847,23 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>HOST ADDRESS</source>
-        <translation type="unfinished"/>
+        <translation>HOST ADDRESS</translation>
     </message>
     <message>
         <source>MAC ADDRESS</source>
-        <translation type="unfinished"/>
+        <translation>MAC ADDRESS</translation>
     </message>
     <message>
         <source>PARENT</source>
-        <translation type="unfinished"/>
+        <translation>INDUK</translation>
     </message>
     <message>
         <source>Adds an object where %1 can be one of &quot;%2&quot; or &quot;%3&quot;. %4 can be specified by name or UUID.</source>
-        <translation type="unfinished"/>
+        <translation>Menambahkan objek yang %1 dapat berupa salah satu dari &quot;%2&quot; atau &quot;%3&quot;. %4 dapat ditentukan berdasarkan nama atau UUID.</translation>
     </message>
     <message>
         <source>Add a room</source>
-        <translation type="unfinished"/>
+        <translation>Tambahkan ruangan</translation>
     </message>
     <message>
         <source>Add a computer to room %1</source>
@@ -1001,32 +1003,32 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>Location &quot;%1&quot; not found.</source>
-        <translation type="unfinished"/>
+        <translation>Lokasi &quot;%1&quot; tidak ditemukan.</translation>
     </message>
 </context>
 <context>
     <name>BuiltinUltraVncServer</name>
     <message>
         <source>Builtin VNC server (UltraVNC)</source>
-        <translation type="unfinished"/>
+        <translation>Server VNC bawaan (UltraVNC)</translation>
     </message>
 </context>
 <context>
     <name>BuiltinX11VncServer</name>
     <message>
         <source>Builtin VNC server (x11vnc)</source>
-        <translation type="unfinished"/>
+        <translation>Server VNC bawaan (UltraVNC)</translation>
     </message>
 </context>
 <context>
     <name>ComputerControlListModel</name>
     <message>
         <source>Name: %1</source>
-        <translation type="unfinished"/>
+        <translation>Nama: %1</translation>
     </message>
     <message>
         <source>Location: %1</source>
-        <translation type="unfinished"/>
+        <translation>Lokasi: %1</translation>
     </message>
     <message>
         <source>Active features: %1</source>
@@ -1034,7 +1036,7 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>[no user]</source>
-        <translation type="unfinished"/>
+        <translation>[tidak ada pengguna]</translation>
     </message>
     <message>
         <source>Online and connected</source>
@@ -1042,19 +1044,19 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>Establishing connection</source>
-        <translation type="unfinished"/>
+        <translation>Membangun koneksi</translation>
     </message>
     <message>
         <source>Computer offline or switched off</source>
-        <translation type="unfinished"/>
+        <translation>Komputer offline atau dimatikan</translation>
     </message>
     <message>
         <source>Veyon Server unreachable or not running</source>
-        <translation type="unfinished"/>
+        <translation>Server Veyon tidak dapat dijangkau atau tidak berjalan</translation>
     </message>
     <message>
         <source>Authentication failed or access denied</source>
-        <translation type="unfinished"/>
+        <translation>Otentikasi gagal atau akses ditolak</translation>
     </message>
     <message>
         <source>Disconnected</source>
@@ -1066,27 +1068,27 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>Logged on user: %1</source>
-        <translation type="unfinished"/>
+        <translation>Pengguna yang masuk: %1</translation>
     </message>
     <message>
         <source>Hostname: %1</source>
-        <translation type="unfinished"/>
+        <translation>Hostname: %1</translation>
     </message>
     <message>
         <source>unknown</source>
-        <translation type="unfinished"/>
+        <translation>tidak dikenal</translation>
     </message>
     <message>
         <source>IP address: %1</source>
-        <translation type="unfinished"/>
+        <translation>IP address: %1</translation>
     </message>
     <message>
         <source>Hostname could not be resolved</source>
-        <translation type="unfinished"/>
+        <translation>Nama host tidak dapat diselesaikan</translation>
     </message>
     <message>
         <source>No features active</source>
-        <translation type="unfinished"/>
+        <translation>Tidak ada fitur yang aktif</translation>
     </message>
 </context>
 <context>
@@ -1097,19 +1099,19 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>User &quot;%1&quot; at host &quot;%2&quot; attempted to access this computer but could not authenticate successfully.</source>
-        <translation type="unfinished"/>
+        <translation>Pengguna &quot;%1&quot; di host &quot;%2&quot; mencoba mengakses komputer ini tetapi tidak berhasil mengautentikasi.</translation>
     </message>
     <message>
         <source>Remote access</source>
-        <translation type="unfinished"/>
+        <translation>Akses jarak jauh</translation>
     </message>
     <message>
         <source>User &quot;%1&quot; at host &quot;%2&quot; is now accessing this computer.</source>
-        <translation type="unfinished"/>
+        <translation>Pengguna &quot;%1&quot; di host &quot;%2&quot; sekarang mengakses komputer ini.</translation>
     </message>
     <message>
         <source>Access control error</source>
-        <translation type="unfinished"/>
+        <translation>Kesalahan kontrol akses</translation>
     </message>
     <message>
         <source>User &quot;%1&quot; at host &quot;%2&quot; attempted to access this computer but has been blocked due to access control settings.</source>
@@ -1635,7 +1637,7 @@ Make sure that the names of the keys belonging to each other are identical on al
     </message>
     <message>
         <source>HOST ADDRESS</source>
-        <translation type="unfinished"/>
+        <translation>ALAMAT HOS</translation>
     </message>
     <message>
         <source>FEATURE</source>
@@ -1741,6 +1743,46 @@ Make sure that the names of the keys belonging to each other are identical on al
         <translation type="unfinished"/>
     </message>
     <message>
+        <source>Settings</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Subfolder handling</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>*.* or *.docx;*.pdf (leave empty for all files)</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>File pattern</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Local destination directory</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Relative (Documents/) or absolute (/tmp/ or C:\TMP) or empty for configured directory</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Source directory on remote computers</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Default</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Files in source directory only</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Files in source directory and subdirectories</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
         <source>Collected files</source>
         <translation type="unfinished"/>
     </message>
@@ -1749,11 +1791,15 @@ Make sure that the names of the keys belonging to each other are identical on al
         <translation type="unfinished"/>
     </message>
     <message>
-        <source>Output directory</source>
+        <source>Start</source>
         <translation type="unfinished"/>
     </message>
     <message>
-        <source>Start</source>
+        <source>Select destination directory</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Open output directory</source>
         <translation type="unfinished"/>
     </message>
     <message>
@@ -1939,6 +1985,14 @@ Make sure that the names of the keys belonging to each other are identical on al
     <message>
         <source>Options</source>
         <translation>Opsi</translation>
+    </message>
+    <message>
+        <source>Destination directory on remote computers:</source>
+        <translation type="unfinished"/>
+    </message>
+    <message>
+        <source>Relative (Desktop/) or absolute (/tmp/ or C:\TMP) or empty for configured directory</source>
+        <translation type="unfinished"/>
     </message>
     <message>
         <source>Overwrite existing files</source>
@@ -3606,6 +3660,13 @@ Press and hold to load arrangement from a file or save current arrangement to a 
     </message>
 </context>
 <context>
+    <name>PipeWireVncServer</name>
+    <message>
+        <source>Wayland VNC server (PipeWire/XDG Desktop Portal)</source>
+        <translation type="unfinished"/>
+    </message>
+</context>
+<context>
     <name>PluginCommands</name>
     <message>
         <source>List names of all installed plugins</source>
@@ -3688,7 +3749,7 @@ Press and hold to load arrangement from a file or save current arrangement to a 
     </message>
     <message>
         <source>MAC ADDRESS</source>
-        <translation type="unfinished"/>
+        <translation>MAC ADDRESS</translation>
     </message>
     <message>
         <source>This command broadcasts a Wake-on-LAN (WOL) packet to the network in order to power on the computer with the given MAC address.</source>
@@ -3792,7 +3853,7 @@ Please save your work and close all programs.</source>
     </message>
     <message>
         <source>Remote access</source>
-        <translation type="unfinished"/>
+        <translation>Akses jarak jauh</translation>
     </message>
     <message>
         <source>No computer has been selected so you can enter a hostname or IP address of a computer for manual access:</source>
@@ -3928,7 +3989,7 @@ Please save your work and close all programs.</source>
     <name>Screenshot</name>
     <message>
         <source>unknown</source>
-        <translation type="unfinished"/>
+        <translation>tidak dikenal</translation>
     </message>
     <message>
         <source>Could not take a screenshot as directory %1 doesn&apos;t exist and couldn&apos;t be created.</source>

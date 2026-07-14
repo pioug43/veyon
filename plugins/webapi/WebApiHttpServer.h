@@ -32,7 +32,9 @@ class QHttpServer;
 class QHttpServerRequest;
 class QTcpServer;
 class WebApiConfiguration;
+#ifdef WEBAPI_HAVE_WEBSOCKETS
 class WebApiWebSocketServer;
+#endif
 
 class WebApiHttpServer : public QObject
 {
@@ -70,7 +72,9 @@ private:
 	WebApiController* m_controller{nullptr};
 	QHttpServer* m_server{nullptr};
 	QTcpServer* m_tcpServer = nullptr;
+#ifdef WEBAPI_HAVE_WEBSOCKETS
 	WebApiWebSocketServer* m_webSocketServer{nullptr};
+#endif
 	bool m_debug = qEnvironmentVariableIsSet("VEYON_WEBAPI_DEBUG");
 
 };

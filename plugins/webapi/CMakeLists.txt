@@ -30,10 +30,6 @@ if(Qt6HttpServer_DIR OR Qt5HttpServer_DIR OR (Qt5Core_VERSION VERSION_GREATER 5.
 		WebApiController.h
 		WebApiHttpServer.cpp
 		WebApiHttpServer.h
-		WebApiVncBridge.cpp
-		WebApiVncBridge.h
-		WebApiWebSocketServer.cpp
-		WebApiWebSocketServer.h
 		webapi.qrc
 		)
 
@@ -49,10 +45,23 @@ if(Qt6HttpServer_DIR OR Qt5HttpServer_DIR OR (Qt5Core_VERSION VERSION_GREATER 5.
 		target_link_libraries(webapi PRIVATE qthttpserver)
 	endif()
 
-	if(Qt6WebSockets_DIR)
-		target_link_libraries(webapi PRIVATE Qt6::WebSockets)
-	elseif(Qt5WebSockets_DIR)
-		target_link_libraries(webapi PRIVATE Qt5::WebSockets)
+	# Pont VNC<->WebSocket pour noVNC : compilé UNIQUEMENT si le module Qt
+	# WebSockets est disponible. Sinon le plugin Web API se construit sans le
+	# pont (il n'est requis que sur l'hôte broker/portail) — ainsi les distros
+	# dont l'image CT n'a pas Qt*WebSockets continuent de compiler.
+	if(Qt6WebSockets_DIR OR Qt5WebSockets_DIR)
+		target_sources(webapi PRIVATE
+			WebApiVncBridge.cpp
+			WebApiVncBridge.h
+			WebApiWebSocketServer.cpp
+			WebApiWebSocketServer.h
+			)
+		target_compile_definitions(webapi PRIVATE WEBAPI_HAVE_WEBSOCKETS)
+		if(Qt6WebSockets_DIR)
+			target_link_libraries(webapi PRIVATE Qt6::WebSockets)
+		else()
+			target_link_libraries(webapi PRIVATE Qt5::WebSockets)
+		endif()
 	endif()
 
 else()

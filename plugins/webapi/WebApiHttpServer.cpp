@@ -39,7 +39,9 @@
 #include "WebApiHttpServer.h"
 #include "WebApiConfiguration.h"
 #include "WebApiController.h"
+#ifdef WEBAPI_HAVE_WEBSOCKETS
 #include "WebApiWebSocketServer.h"
+#endif
 
 static inline QByteArray toJson(const QVariant& data)
 {
@@ -157,7 +159,9 @@ WebApiHttpServer::WebApiHttpServer( const WebApiConfiguration& configuration, QO
 
 WebApiHttpServer::~WebApiHttpServer()
 {
+#ifdef WEBAPI_HAVE_WEBSOCKETS
 	delete m_webSocketServer;
+#endif
 	delete m_server;
 
 	m_threadPool.waitForDone();
@@ -372,6 +376,7 @@ bool WebApiHttpServer::start()
 
 	vInfo() << "listening at port" << m_configuration.httpServerPort();
 
+#ifdef WEBAPI_HAVE_WEBSOCKETS
 	if( m_configuration.webSocketServerEnabled() )
 	{
 		m_webSocketServer = new WebApiWebSocketServer( m_configuration, m_controller, this );
@@ -382,6 +387,7 @@ bool WebApiHttpServer::start()
 			m_webSocketServer = nullptr;
 		}
 	}
+#endif
 
 	return success;
 }

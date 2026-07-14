@@ -114,12 +114,26 @@ private:
 	void stopEnforcement();
 	void enforceTick();				// termine périodiquement les processus interdits
 	void killApplication( const QString& executable ) const;
+	// Filtrage des sites. Windows : PAC + politiques proxy navigateur + DoH off
+	// (liste noire OU blanche, robuste au contournement DoH). Linux : fichier
+	// hosts (liste noire seulement ; « allow » averti).
+	void applySiteFiltering( const QStringList& sites, const QString& mode );
+	void removeSiteFiltering();
 	void applyHostsBlocking( const QStringList& sites );
 	void revertHostsBlocking();
 	void removeHostsSection();		// retire notre section du fichier hosts (sans garde)
 	void flushDnsCache() const;		// purge le cache DNS résolveur pour un effet immédiat
 	static QString hostsFilePath();
 	static QString hostsSignature( const QStringList& sites, const QString& mode );
+#if defined(Q_OS_WIN)
+	void applyWindowsSiteFiltering( const QStringList& sites, const QString& mode );
+	void removeWindowsSiteFiltering();
+	void writePacFile( const QStringList& sites, const QString& mode );
+	static QString pacFilePath();
+	static QString siteFilterMarkerFile();
+	static void regSet( const QString& key, const QString& name, const QString& type, const QString& data );
+	static void regDelete( const QString& key, const QString& name );
+#endif
 
 	// Empêchement du LANCEMENT des logiciels interdits (Windows : Image File
 	// Execution Options). Le kill périodique reste en complément (instances déjà

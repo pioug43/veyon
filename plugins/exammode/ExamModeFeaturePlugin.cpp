@@ -59,6 +59,14 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 	{
 		removeHostsSection();
 		cleanupStaleLaunchPrevention();
+#if defined(Q_OS_WIN)
+		// filtrage sites résiduel (politiques proxy/DoH) laissé par un crash
+		if( QFile::exists( siteFilterMarkerFile() ) )
+		{
+			vInfo() << "ExamMode: nettoyage d'un filtrage de sites résiduel";
+			removeWindowsSiteFiltering();
+		}
+#endif
 	}
 }
 
@@ -67,10 +75,7 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 ExamModeFeaturePlugin::~ExamModeFeaturePlugin()
 {
 	// filet de sécurité : ne jamais laisser de restriction derrière soi
-	if( m_hostsModified )
-	{
-		revertHostsBlocking();
-	}
+	removeSiteFiltering();
 	removeLaunchPrevention();
 }
 
@@ -179,7 +184,7 @@ void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, co
 	{
 		vInfo() << "ExamMode: enforcement -" << m_blockedApps.size() << "app(s),"
 				<< m_sites.size() << "site(s), mode" << m_sitesMode;
-		applyHostsBlocking( m_sites );
+		applySiteFiltering( m_sites, m_sitesMode );
 		m_hostsSignature = signature;
 	}
 	else if( wasActive == false )
@@ -237,7 +242,7 @@ void ExamModeFeaturePlugin::stopEnforcement()
 		m_watchdog->stop();
 	}
 	removeLaunchPrevention();
-	revertHostsBlocking();
+	removeSiteFiltering();
 	vInfo() << "ExamMode: enforcement stopped";
 }
 
@@ -306,6 +311,33 @@ QString ExamModeFeaturePlugin::hostsFilePath()
 QString ExamModeFeaturePlugin::hostsSignature( const QStringList& sites, const QString& mode )
 {
 	return mode + QLatin1Char('\n') + sites.join( QLatin1Char('\n') );
+}
+
+
+
+/**
+ * Applique le filtrage des sites. Windows : PAC (liste noire OU blanche) + DoH
+ * désactivé, robuste au contournement. Linux : fichier hosts (liste noire).
+ */
+void ExamModeFeaturePlugin::applySiteFiltering( const QStringList& sites, const QString& mode )
+{
+#if defined(Q_OS_WIN)
+	applyWindowsSiteFiltering( sites, mode );
+#else
+	Q_UNUSED(mode)
+	applyHostsBlocking( sites );
+#endif
+}
+
+
+
+void ExamModeFeaturePlugin::removeSiteFiltering()
+{
+#if defined(Q_OS_WIN)
+	removeWindowsSiteFiltering();
+#else
+	revertHostsBlocking();
+#endif
 }
 
 
@@ -566,3 +598,156 @@ void ExamModeFeaturePlugin::cleanupStaleLaunchPrevention()
 	}
 #endif
 }
+
+
+#if defined(Q_OS_WIN)
+
+QString ExamModeFeaturePlugin::pacFilePath()
+{
+	return QStringLiteral("C:/ProgramData/Veyon/exam.pac");
+}
+
+
+
+QString ExamModeFeaturePlugin::siteFilterMarkerFile()
+{
+	return QStringLiteral("C:/ProgramData/Veyon/exam-sitefilter.on");
+}
+
+
+
+/** Écrit un PAC : liste blanche (allow) ou liste noire (block), robuste au DoH. */
+void ExamModeFeaturePlugin::writePacFile( const QStringList& sites, const QString& mode )
+{
+	QStringList items;
+	for( const auto& s : sites )
+	{
+		const auto h = s.trimmed().toLower();
+		if( h.isEmpty() == false )
+		{
+			items.append( QStringLiteral("\"%1\"").arg( QString(h).replace( QLatin1Char('"'), QString() ) ) );
+		}
+	}
+	const bool allow = ( mode == QStringLiteral("allow") );
+	// site listé -> "PROXY 127.0.0.1:1" (mort = bloqué) ou "DIRECT" selon le mode
+	const auto listedResult = allow ? QStringLiteral("DIRECT") : QStringLiteral("PROXY 127.0.0.1:1");
+	const auto otherResult  = allow ? QStringLiteral("PROXY 127.0.0.1:1") : QStringLiteral("DIRECT");
+
+	const auto pac = QStringLiteral(
+		"function FindProxyForURL(url, host) {\n"
+		"  host = ('' + host).toLowerCase();\n"
+		"  if (host === 'localhost' || host === '127.0.0.1' || isPlainHostName(host)) return 'DIRECT';\n"
+		"  var list = [%1];\n"
+		"  var inList = false;\n"
+		"  for (var i = 0; i < list.length; i++) {\n"
+		"    var d = list[i];\n"
+		"    if (host === d || host === 'www.' + d || dnsDomainIs(host, '.' + d)) { inList = true; break; }\n"
+		"  }\n"
+		"  return inList ? '%2' : '%3';\n"
+		"}\n" ).arg( items.join( QStringLiteral(", ") ), listedResult, otherResult );
+
+	QDir().mkpath( QFileInfo( pacFilePath() ).absolutePath() );
+	QFile f( pacFilePath() );
+	if( f.open( QIODevice::WriteOnly | QIODevice::Text ) )
+	{
+		f.write( pac.toUtf8() );
+		f.close();
+	}
+}
+
+
+
+/** reg add helper (échec silencieux). */
+void ExamModeFeaturePlugin::regSet( const QString& key, const QString& name, const QString& type, const QString& data )
+{
+	QProcess p;
+	p.start( QStringLiteral("reg"), { QStringLiteral("add"), key, QStringLiteral("/v"), name,
+		QStringLiteral("/t"), type, QStringLiteral("/d"), data, QStringLiteral("/f") } );
+	p.waitForFinished( 5000 );
+}
+
+
+
+void ExamModeFeaturePlugin::regDelete( const QString& key, const QString& name )
+{
+	QProcess p;
+	p.start( QStringLiteral("reg"), { QStringLiteral("delete"), key, QStringLiteral("/v"), name, QStringLiteral("/f") } );
+	p.waitForFinished( 5000 );
+}
+
+
+
+/**
+ * Filtrage des sites sous Windows : PAC (data: pour Chrome/Edge, file:// pour
+ * Firefox) via politiques HKLM + désactivation DoH (sinon le navigateur pourrait
+ * résoudre hors du contrôle). Couvre liste noire ET blanche.
+ */
+void ExamModeFeaturePlugin::applyWindowsSiteFiltering( const QStringList& sites, const QString& mode )
+{
+	removeWindowsSiteFiltering();		// état propre
+
+	if( sites.isEmpty() && mode != QStringLiteral("allow") )
+	{
+		return;		// liste noire vide = rien à filtrer
+	}
+
+	writePacFile( sites, mode );
+
+	// PAC en data: URL (Chrome/Edge restreignent file://) + fichier pour Firefox.
+	QFile f( pacFilePath() );
+	QByteArray pac;
+	if( f.open( QIODevice::ReadOnly ) ) { pac = f.readAll(); f.close(); }
+	const auto dataUrl = QStringLiteral("data:application/x-ns-proxy-autoconfig;base64,")
+		+ QString::fromLatin1( pac.toBase64() );
+	const auto fileUrl = QStringLiteral("file:///") + pacFilePath();
+
+	const QStringList chromiumKeys = {
+		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"),
+		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"),
+	};
+	for( const auto& key : chromiumKeys )
+	{
+		regSet( key, QStringLiteral("ProxyMode"), QStringLiteral("REG_SZ"), QStringLiteral("pac_script") );
+		regSet( key, QStringLiteral("ProxyPacUrl"), QStringLiteral("REG_SZ"), dataUrl );
+		regSet( key, QStringLiteral("DnsOverHttpsMode"), QStringLiteral("REG_SZ"), QStringLiteral("off") );
+	}
+
+	// Firefox : proxy autoConfig + DoH off (via ADMX → registre)
+	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
+			QStringLiteral("Mode"), QStringLiteral("REG_SZ"), QStringLiteral("autoConfig") );
+	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
+			QStringLiteral("AutoConfigURL"), QStringLiteral("REG_SZ"), fileUrl );
+	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
+			QStringLiteral("Locked"), QStringLiteral("REG_DWORD"), QStringLiteral("1") );
+	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\DNSOverHTTPS"),
+			QStringLiteral("Enabled"), QStringLiteral("REG_DWORD"), QStringLiteral("0") );
+
+	// marqueur pour nettoyage anti-crash au démarrage
+	QFile marker( siteFilterMarkerFile() );
+	if( marker.open( QIODevice::WriteOnly ) ) { marker.write( "1" ); marker.close(); }
+}
+
+
+
+void ExamModeFeaturePlugin::removeWindowsSiteFiltering()
+{
+	const QStringList chromiumKeys = {
+		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"),
+		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"),
+	};
+	for( const auto& key : chromiumKeys )
+	{
+		regDelete( key, QStringLiteral("ProxyMode") );
+		regDelete( key, QStringLiteral("ProxyPacUrl") );
+		regDelete( key, QStringLiteral("DnsOverHttpsMode") );
+	}
+	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Mode") );
+	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("AutoConfigURL") );
+	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Locked") );
+	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\DNSOverHTTPS"), QStringLiteral("Enabled") );
+
+	QFile::remove( pacFilePath() );
+	QFile::remove( siteFilterMarkerFile() );
+}
+
+#endif

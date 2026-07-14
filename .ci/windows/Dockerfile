@@ -16,12 +16,16 @@ ARG MXE_TARGET=x86_64-w64-mingw32.shared
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/opt/mxe/usr/bin:${PATH}"
 
-# Dépendances de build MXE + NSIS (installeur) + outils utilisés par le CMake Veyon
+# Dépendances de build MXE (jeu de requirements Debian officiel) + NSIS
+# (installeur) + tofrodos (todos, utilisé par WindowsInstaller.cmake).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        autoconf automake autopoint bash bison bzip2 flex g++ gettext git gperf \
-        intltool libtool libtool-bin libssl-dev libxml-parser-perl lzip make \
+        autoconf automake autopoint bash bison bzip2 flex g++ g++-multilib \
+        gettext git gperf intltool libc6-dev-i386 \
+        libgdk-pixbuf2.0-dev libgdk-pixbuf2.0-bin libltdl-dev libgl-dev \
+        libpcre3-dev libssl-dev libtool libtool-bin libxml-parser-perl lzip make \
         ninja-build openssl p7zip-full patch perl python3 python3-mako \
-        python3-packaging ruby sed unzip wget xz-utils nsis tofrodos ca-certificates \
+        python3-packaging python-is-python3 ruby sed sqlite3 unzip wget xz-utils \
+        nsis tofrodos ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # MXE : cross-toolchain + Qt6 + deps requis par Veyon (voir find_package dans

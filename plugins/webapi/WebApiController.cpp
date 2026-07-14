@@ -1086,6 +1086,33 @@ WebApiController::Response WebApiController::checkConnection( const Request& req
 
 
 
+ComputerControlInterface::Pointer WebApiController::lookupConnectionByUid( const QUuid& connectionUuid )
+{
+	return runInWorkerThread<ComputerControlInterface::Pointer>([=, this]() -> ComputerControlInterface::Pointer {
+		m_connectionsLock.lockForRead();
+		if( connectionUuid.isNull() || m_connections.contains( connectionUuid ) == false )
+		{
+			m_connectionsLock.unlock();
+			return {};
+		}
+
+		const auto connection = std::as_const(m_connections)[connectionUuid];
+		m_connectionsLock.unlock();
+
+		connection->lock();
+
+		const auto idleTimer = connection->idleTimer();
+		idleTimer->stop();
+		idleTimer->start();
+
+		connection->unlock();
+
+		return connection->controlInterface();
+	} );
+}
+
+
+
 WebApiController::Response WebApiController::checkFeature( const QString& featureUid )
 {
 	if( VeyonCore::featureManager().feature(Feature::Uid{featureUid}).isValid() == false )

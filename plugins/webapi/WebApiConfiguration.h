@@ -37,5 +37,7 @@
     OP( WebApiConfiguration, m_configuration, bool, httpsEnabled, setHttpsEnabled, "HttpsEnabled", "WebAPI", false, Configuration::Property::Flag::Advanced )	\
     OP( WebApiConfiguration, m_configuration, QString, tlsCertificateFile, setTlsCertificateFile, "TlsCertificateFile", "WebAPI", QString(), Configuration::Property::Flag::Advanced )	\
     OP( WebApiConfiguration, m_configuration, QString, tlsPrivateKeyFile, setTlsPrivateKeyFile, "TlsPrivateKeyFile", "WebAPI", QString(), Configuration::Property::Flag::Advanced )	\
+    OP( WebApiConfiguration, m_configuration, bool, webSocketServerEnabled, setWebSocketServerEnabled, "WebSocketServerEnabled", "WebAPI", true, Configuration::Property::Flag::Advanced )	\
+    OP( WebApiConfiguration, m_configuration, int, webSocketServerPort, setWebSocketServerPort, "WebSocketServerPort", "WebAPI", 11081, Configuration::Property::Flag::Advanced )	\
 
 DECLARE_CONFIG_PROXY(WebApiConfiguration, FOREACH_HTTP_API_CONFIG_PROPERTY)

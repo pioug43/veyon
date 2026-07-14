@@ -3,9 +3,10 @@ if(NOT WITH_WEBAPI)
 endif()
 
 if(WITH_QT6)
-	find_package(Qt6 COMPONENTS HttpServer)
+	find_package(Qt6 COMPONENTS HttpServer WebSockets)
 else()
 	find_package(Qt5HttpServer)
+	find_package(Qt5WebSockets)
 endif()
 
 if(Qt6HttpServer_DIR OR Qt5HttpServer_DIR OR (Qt5Core_VERSION VERSION_GREATER 5.12.0 AND TARGET Qt5::CorePrivate AND TARGET Qt5::NetworkPrivate))
@@ -29,6 +30,10 @@ if(Qt6HttpServer_DIR OR Qt5HttpServer_DIR OR (Qt5Core_VERSION VERSION_GREATER 5.
 		WebApiController.h
 		WebApiHttpServer.cpp
 		WebApiHttpServer.h
+		WebApiVncBridge.cpp
+		WebApiVncBridge.h
+		WebApiWebSocketServer.cpp
+		WebApiWebSocketServer.h
 		webapi.qrc
 		)
 
@@ -42,6 +47,12 @@ if(Qt6HttpServer_DIR OR Qt5HttpServer_DIR OR (Qt5Core_VERSION VERSION_GREATER 5.
 		add_subdirectory(qthttpserver)
 
 		target_link_libraries(webapi PRIVATE qthttpserver)
+	endif()
+
+	if(Qt6WebSockets_DIR)
+		target_link_libraries(webapi PRIVATE Qt6::WebSockets)
+	elseif(Qt5WebSockets_DIR)
+		target_link_libraries(webapi PRIVATE Qt5::WebSockets)
 	endif()
 
 else()

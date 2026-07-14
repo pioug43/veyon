@@ -163,6 +163,15 @@ public:
 	QString getConnectionDetails();
 	Response sleep(const Request& request, const int& seconds);
 
+	/*! \brief Thread-safe lookup of an authenticated connection by its UID.
+	 *
+	 * Validates the given connection UID, re-arms the idle timer (like
+	 * checkConnection()) and returns the associated ComputerControlInterface.
+	 * Returns a null pointer if the UID is unknown. Used by the WebSocket VNC
+	 * bridge to authorize incoming noVNC clients.
+	 */
+	ComputerControlInterface::Pointer lookupConnectionByUid( const QUuid& connectionUuid );
+
 	static QString errorString( Error error );
 
 private:

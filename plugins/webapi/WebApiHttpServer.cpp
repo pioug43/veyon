@@ -39,6 +39,7 @@
 #include "WebApiHttpServer.h"
 #include "WebApiConfiguration.h"
 #include "WebApiController.h"
+#include "WebApiWebSocketServer.h"
 
 static inline QByteArray toJson(const QVariant& data)
 {
@@ -156,6 +157,7 @@ WebApiHttpServer::WebApiHttpServer( const WebApiConfiguration& configuration, QO
 
 WebApiHttpServer::~WebApiHttpServer()
 {
+	delete m_webSocketServer;
 	delete m_server;
 
 	m_threadPool.waitForDone();
@@ -369,6 +371,17 @@ bool WebApiHttpServer::start()
 	}));
 
 	vInfo() << "listening at port" << m_configuration.httpServerPort();
+
+	if( m_configuration.webSocketServerEnabled() )
+	{
+		m_webSocketServer = new WebApiWebSocketServer( m_configuration, m_controller, this );
+		if( m_webSocketServer->start() == false )
+		{
+			vCritical() << "failed to start WebSocket VNC bridge server";
+			delete m_webSocketServer;
+			m_webSocketServer = nullptr;
+		}
+	}
 
 	return success;
 }

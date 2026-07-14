@@ -46,6 +46,16 @@ class ExamModeFeaturePlugin : public QObject, FeatureProviderInterface, PluginIn
 	Q_PLUGIN_METADATA(IID "io.veyon.Veyon.Plugins.ExamMode")
 	Q_INTERFACES(PluginInterface FeatureProviderInterface)
 public:
+	// Arguments transmis avec la feature (Q_ENUM : sérialisés en camelCase par
+	// argToString → clés JSON « blockedApps », « sites », « sitesMode »).
+	enum class Argument
+	{
+		BlockedApps,	// QStringList : noms d'exécutables interdits
+		Sites,			// QStringList : domaines
+		SitesMode,		// QString : "block" | "allow"
+	};
+	Q_ENUM(Argument)
+
 	explicit ExamModeFeaturePlugin( QObject* parent = nullptr );
 	~ExamModeFeaturePlugin() override;
 

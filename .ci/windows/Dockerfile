@@ -32,10 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # CMakeLists.txt : PNG, JPEG, LZO, OpenSSL, OpenLDAP/SASL). Build long.
 RUN git clone --depth 1 https://github.com/mxe/mxe.git /opt/mxe
 WORKDIR /opt/mxe
+# NB : MXE ne fournit pas de paquet « openldap » → le build Windows du fork se
+# fait SANS LDAP (postes = auth keyfile ; cf. WITH_LDAP=OFF côté build Veyon).
 RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" \
         cc cmake ninja \
         qt6-qtbase qt6-qttools qt6-qtsvg qt6-qtwebsockets \
-        openssl libjpeg-turbo libpng lzo openldap
+        openssl libjpeg-turbo libpng lzo
 
 # Layout attendu par build.sh (/usr/x86_64-w64-mingw32 + qt-cmake wrapper)
 RUN ln -sfn /opt/mxe/usr/${MXE_TARGET} /usr/x86_64-w64-mingw32 \
@@ -49,8 +51,7 @@ RUN git clone --depth 1 https://invent.kde.org/libraries/qca.git /tmp/qca \
  && /usr/x86_64-w64-mingw32/bin/qt-cmake -S /tmp/qca -B /tmp/qca/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/mxe/usr/${MXE_TARGET} \
-        -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DQCA_PLUGIN_TYPE=STATIC \
-        -DWITH_ossl_PLUGIN=ON \
+        -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF \
  && ninja -C /tmp/qca/build \
  && ninja -C /tmp/qca/build install \
  && rm -rf /tmp/qca

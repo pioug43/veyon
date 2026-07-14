@@ -121,16 +121,28 @@ private:
 	static QString hostsFilePath();
 	static QString hostsSignature( const QStringList& sites, const QString& mode );
 
+	// Empêchement du LANCEMENT des logiciels interdits (Windows : Image File
+	// Execution Options). Le kill périodique reste en complément (instances déjà
+	// ouvertes). Sous Linux : sans effet (on s'appuie sur le kill).
+	void applyLaunchPrevention( const QStringList& apps );
+	void removeLaunchPrevention();
+	void cleanupStaleLaunchPrevention();		// au démarrage : retire un blocage résiduel (crash)
+	static QString windowsImageName( const QString& executable );
+	static QString launchPreventionStateFile();
+
 	const Feature m_examModeFeature;
 	const FeatureList m_features;
 
 	QTimer* m_timer{nullptr};
+	QTimer* m_watchdog{nullptr};	// lève tout si le portail cesse de ré-appliquer (fail-safe)
 	bool m_active{false};
 	QStringList m_blockedApps{};
 	QStringList m_sites{};
 	QString m_sitesMode{QStringLiteral("block")};
 	bool m_hostsModified{false};
 	QString m_hostsSignature{};		// évite de réécrire hosts si sites+mode inchangés
+	QStringList m_preventedApps{};	// exécutables sous blocage de lancement (IFEO)
+	QString m_appsSignature{};		// évite de réappliquer IFEO si la liste est inchangée
 
 	// délimiteurs de notre section dans le fichier hosts (retrait propre au stop)
 	static constexpr auto HostsMarkerBegin = "# >>> Veyon ExamMode >>>";

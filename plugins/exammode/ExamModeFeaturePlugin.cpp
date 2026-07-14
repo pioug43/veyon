@@ -22,7 +22,9 @@
  *
  */
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QProcess>
 #include <QTimer>
 
@@ -33,6 +35,9 @@
 
 // intervalle de rappel de l'application des restrictions (fin des processus interdits)
 static constexpr int EnforceIntervalMs = 4000;
+// fail-safe : le portail ré-applique le profil chaque minute ; sans re-push
+// pendant ce délai, on lève automatiquement toutes les restrictions.
+static constexpr int WatchdogMs = 5 * 60 * 1000;
 
 
 ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
@@ -53,6 +58,7 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 	if( VeyonCore::component() == VeyonCore::Component::Service )
 	{
 		removeHostsSection();
+		cleanupStaleLaunchPrevention();
 	}
 }
 
@@ -60,11 +66,12 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 
 ExamModeFeaturePlugin::~ExamModeFeaturePlugin()
 {
-	// filet de sécurité : ne jamais laisser le fichier hosts modifié derrière soi
+	// filet de sécurité : ne jamais laisser de restriction derrière soi
 	if( m_hostsModified )
 	{
 		revertHostsBlocking();
 	}
+	removeLaunchPrevention();
 }
 
 
@@ -180,6 +187,14 @@ void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, co
 		vInfo() << "ExamMode: enforcement (re)started -" << m_blockedApps.size() << "app(s)";
 	}
 
+	// Empêche le lancement des logiciels interdits (IFEO Windows) si la liste change.
+	const auto appsSig = m_blockedApps.join( QLatin1Char('\n') );
+	if( appsSig != m_appsSignature )
+	{
+		applyLaunchPrevention( m_blockedApps );
+		m_appsSignature = appsSig;
+	}
+
 	if( m_timer == nullptr )
 	{
 		m_timer = new QTimer( this );
@@ -189,6 +204,20 @@ void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, co
 	{
 		m_timer->start( EnforceIntervalMs );
 	}
+
+	// Fail-safe : (re)arme le watchdog. Sans nouveau startExam avant l'échéance
+	// (portail arrêté, supervision coupée, poste hors-ligne au stop…), on lève tout.
+	if( m_watchdog == nullptr )
+	{
+		m_watchdog = new QTimer( this );
+		m_watchdog->setSingleShot( true );
+		connect( m_watchdog, &QTimer::timeout, this, [this]() {
+			vWarning() << "ExamMode: watchdog — plus de re-push du portail, levée automatique des restrictions";
+			stopEnforcement();
+		} );
+	}
+	m_watchdog->start( WatchdogMs );
+
 	enforceTick();		// passe immédiate sur les processus interdits
 }
 
@@ -198,10 +227,16 @@ void ExamModeFeaturePlugin::stopEnforcement()
 {
 	m_active = false;
 	m_hostsSignature.clear();
+	m_appsSignature.clear();
 	if( m_timer )
 	{
 		m_timer->stop();
 	}
+	if( m_watchdog )
+	{
+		m_watchdog->stop();
+	}
+	removeLaunchPrevention();
 	revertHostsBlocking();
 	vInfo() << "ExamMode: enforcement stopped";
 }
@@ -410,5 +445,124 @@ void ExamModeFeaturePlugin::flushDnsCache() const
 #else
 	// systemd-resolved (la plupart des VDI Linux récents) ; échec silencieux sinon.
 	QProcess::startDetached( QStringLiteral("resolvectl"), { QStringLiteral("flush-caches") } );
+#endif
+}
+
+
+
+/** Nom d'image Windows (basename + suffixe .exe) pour une clé IFEO. */
+QString ExamModeFeaturePlugin::windowsImageName( const QString& executable )
+{
+	auto image = executable.trimmed().section( QLatin1Char('/'), -1 ).section( QLatin1Char('\\'), -1 );
+	if( image.isEmpty() == false && image.endsWith( QStringLiteral(".exe"), Qt::CaseInsensitive ) == false )
+	{
+		image += QStringLiteral(".exe");
+	}
+	return image;
+}
+
+
+
+/** Fichier d'état : liste des exécutables sous blocage de lancement (nettoyage anti-crash). */
+QString ExamModeFeaturePlugin::launchPreventionStateFile()
+{
+#if defined(Q_OS_WIN)
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-blocked-apps.txt");
+#else
+	return QStringLiteral("/var/lib/veyon/exammode-blocked-apps.txt");
+#endif
+}
+
+
+
+/**
+ * Empêche le LANCEMENT des exécutables interdits. Sous Windows via IFEO :
+ * HKLM\...\Image File Execution Options\<exe> valeur Debugger = systray.exe
+ * (no-op silencieux) → l'exe ne démarre plus. La liste appliquée est persistée
+ * pour pouvoir la nettoyer même après un crash (cf. cleanupStaleLaunchPrevention).
+ * Sous Linux : sans effet (le kill périodique fait le travail).
+ */
+void ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
+{
+#if defined(Q_OS_WIN)
+	removeLaunchPrevention();		// repart d'un état propre
+
+	QStringList applied;
+	for( const auto& app : apps )
+	{
+		const auto image = windowsImageName( app );
+		if( image.isEmpty() )
+		{
+			continue;
+		}
+		const auto key = QStringLiteral(
+			"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%1" ).arg( image );
+		QProcess reg;
+		reg.start( QStringLiteral("reg"), { QStringLiteral("add"), key,
+			QStringLiteral("/v"), QStringLiteral("Debugger"),
+			QStringLiteral("/t"), QStringLiteral("REG_SZ"),
+			QStringLiteral("/d"), QStringLiteral("C:\\Windows\\System32\\systray.exe"),
+			QStringLiteral("/f") } );
+		reg.waitForFinished( 5000 );
+		applied.append( image );
+	}
+	m_preventedApps = applied;
+
+	// persiste la liste pour un nettoyage fiable même après un crash du service
+	QDir().mkpath( QFileInfo( launchPreventionStateFile() ).absolutePath() );
+	QFile state( launchPreventionStateFile() );
+	if( state.open( QIODevice::WriteOnly | QIODevice::Text ) )
+	{
+		state.write( applied.join( QLatin1Char('\n') ).toUtf8() );
+		state.close();
+	}
+#else
+	Q_UNUSED(apps)
+#endif
+}
+
+
+
+/** Lève le blocage de lancement (retire les clés IFEO) et supprime le fichier d'état. */
+void ExamModeFeaturePlugin::removeLaunchPrevention()
+{
+#if defined(Q_OS_WIN)
+	for( const auto& image : m_preventedApps )
+	{
+		const auto key = QStringLiteral(
+			"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%1" ).arg( image );
+		QProcess reg;
+		reg.start( QStringLiteral("reg"), { QStringLiteral("delete"), key,
+			QStringLiteral("/v"), QStringLiteral("Debugger"), QStringLiteral("/f") } );
+		reg.waitForFinished( 5000 );
+	}
+	m_preventedApps.clear();
+	QFile::remove( launchPreventionStateFile() );
+#endif
+}
+
+
+
+/** Au démarrage du service : retire un blocage de lancement laissé par un crash. */
+void ExamModeFeaturePlugin::cleanupStaleLaunchPrevention()
+{
+#if defined(Q_OS_WIN)
+	QFile state( launchPreventionStateFile() );
+	if( state.open( QIODevice::ReadOnly | QIODevice::Text ) == false )
+	{
+		return;
+	}
+	m_preventedApps = QString::fromUtf8( state.readAll() )
+		.split( QLatin1Char('\n'), Qt::SkipEmptyParts );
+	state.close();
+	if( m_preventedApps.isEmpty() == false )
+	{
+		vInfo() << "ExamMode: nettoyage d'un blocage de lancement résiduel -" << m_preventedApps.size() << "app(s)";
+		removeLaunchPrevention();
+	}
+	else
+	{
+		QFile::remove( launchPreventionStateFile() );
+	}
 #endif
 }

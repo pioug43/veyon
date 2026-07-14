@@ -1,0 +1,31 @@
+name: "Windows installer (fork, with exammode)"
+
+# Produit l'installeur Windows du fork (avec le plugin exammode) à partir de
+# l'image toolchain construite par windows-image.yml. Manuel (workflow_dispatch)
+# tant que l'image n'est pas figée ; à intégrer à build.yml/release.yml une fois
+# l'image validée. L'artefact veyon-*setup.exe est ce que le script client installe.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/veyon-ci-windows:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - run: git config --global --add safe.directory $GITHUB_WORKSPACE
+      - run: .ci/windows/build.sh x86_64 create-windows-installer
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-installer
+          path: veyon-*setup.exe

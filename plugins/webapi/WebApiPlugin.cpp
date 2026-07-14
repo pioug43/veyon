@@ -51,7 +51,11 @@ WebApiPlugin::~WebApiPlugin()
 	if( m_httpServerThread.isRunning() )
 	{
 		m_httpServerThread.quit();
-		m_httpServerThread.wait( ServerThreadTerminationTimeout );
+		if( m_httpServerThread.wait(ServerThreadTerminationTimeout) == false )
+		{
+			vWarning() << "WebAPI server is still processing requests; waiting for a clean shutdown";
+			m_httpServerThread.wait();
+		}
 	}
 }
 
@@ -90,6 +94,7 @@ void WebApiPlugin::startHttpServerThread()
 	m_httpServer->moveToThread( &m_httpServerThread );
 
 	connect( &m_httpServerThread, &QThread::started, m_httpServer, &WebApiHttpServer::start );
+	connect( &m_httpServerThread, &QThread::finished, m_httpServer, &QObject::deleteLater );
 
 	m_httpServerThread.start();
 }

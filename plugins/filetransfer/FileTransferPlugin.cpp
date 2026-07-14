@@ -498,8 +498,19 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 	{
 	case FeatureCommand::StartFileTransfer:
 		m_currentFile.close();
+		m_currentFile.setFileName({});
+		m_currentFileName.clear();
+		m_currentTransferId = {};
 
 		{
+			const auto requestedFileName = message.argument(Argument::FileName).toString();
+			const auto safeFileName = QFileInfo(requestedFileName).fileName();
+			if( safeFileName.isEmpty() || safeFileName != requestedFileName )
+			{
+				vCritical() << "refusing unsafe file transfer name" << requestedFileName;
+				return true;
+			}
+
 			// Use custom destination directory if provided, otherwise fall back to config
 			QString destDir;
 			if (message.hasArgument(Argument::DestinationDirectory))
@@ -516,7 +527,7 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 				VeyonCore::filesystem().ensurePathExists(destDir);
 			}
 
-			m_currentFileName = destDir + QDir::separator() + message.argument(Argument::FileName).toString();
+			m_currentFileName = destDir + QDir::separator() + safeFileName;
 		}
 		m_currentFile.setFileName(m_currentFileName);
 		if( m_currentFile.exists() && message.argument(Argument::OverwriteExistingFile).toBool() == false )
@@ -543,9 +554,19 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 		return true;
 
 	case FeatureCommand::ContinueFileTransfer:
-		if (message.argument(Argument::TransferId).toUuid() == m_currentTransferId)
+		if (m_currentFile.isOpen() && message.argument(Argument::TransferId).toUuid() == m_currentTransferId)
 		{
-			m_currentFile.write(message.argument(Argument::DataChunk).toByteArray());
+			const auto data = message.argument(Argument::DataChunk).toByteArray();
+			if( m_currentFile.write(data) != data.size() )
+			{
+				vCritical() << "failed to write file transfer chunk to" << m_currentFile.fileName()
+							<< m_currentFile.errorString();
+				m_currentFile.close();
+				m_currentFile.remove();
+				m_currentFile.setFileName({});
+				m_currentFileName.clear();
+				m_currentTransferId = {};
+			}
 		}
 		else
 		{
@@ -556,7 +577,11 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 	case FeatureCommand::CancelFileTransfer:
 		if (message.argument(Argument::TransferId).toUuid() == m_currentTransferId)
 		{
+			m_currentFile.close();
 			m_currentFile.remove();
+			m_currentFile.setFileName({});
+			m_currentFileName.clear();
+			m_currentTransferId = {};
 		}
 		else
 		{
@@ -565,12 +590,19 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 		return true;
 
 	case FeatureCommand::FinishFileTransfer:
+		if( message.argument(Argument::TransferId).toUuid() != m_currentTransferId )
+		{
+			vWarning() << "received finish message for unknown transfer ID";
+			return true;
+		}
 		m_currentFile.close();
-		if (message.argument(Argument::OpenFileInApplication).toBool())
+		if (message.argument(Argument::OpenFileInApplication).toBool() && m_currentFile.exists())
 		{
 			QDesktopServices::openUrl( QUrl::fromLocalFile( m_currentFileName ) );
 		}
 		m_currentFile.setFileName({});
+		m_currentFileName.clear();
+		m_currentTransferId = {};
 		return true;
 
 	case FeatureCommand::OpenTransferFolder:
@@ -732,6 +764,21 @@ bool FileTransferPlugin::controlDistributeFilesFeature(Operation operation, cons
 		m_fileTransferController->setFiles(files);
 		m_fileTransferController->setInterfaces(computerControlInterfaces);
 
+		FileTransferController::Flags flags{FileTransferController::Transfer};
+		if( arguments.value(argToString(Argument::OpenFileInApplication)).toBool() )
+		{
+			flags |= FileTransferController::OpenFilesInApplication;
+		}
+		if( arguments.value(argToString(Argument::OverwriteExistingFile)).toBool() )
+		{
+			flags |= FileTransferController::OverwriteExistingFiles;
+		}
+		if( arguments.value(argToString(Argument::OpenTransferFolder)).toBool() )
+		{
+			flags |= FileTransferController::OpenTransferFolder;
+		}
+		m_fileTransferController->setFlags(flags);
+
 		// Set custom destination directory if provided
 		if (arguments.contains(argToString(Argument::DestinationDirectory)))
 		{
@@ -770,8 +817,6 @@ bool FileTransferPlugin::controlDistributeFilesFeature(Operation operation, cons
 bool FileTransferPlugin::controlCollectFilesFeature(Operation operation, const QVariantMap& arguments,
 													const ComputerControlInterfaceList& computerControlInterfaces)
 {
-	Q_UNUSED(arguments)
-
 	if (operation == Operation::Initialize)
 	{
 		if (m_fileCollectController == nullptr)
@@ -780,6 +825,28 @@ bool FileTransferPlugin::controlCollectFilesFeature(Operation operation, const Q
 		}
 
 		m_fileCollectController->setInterfaces(computerControlInterfaces);
+		if( arguments.contains(argToString(Argument::SourceDirectory)) )
+		{
+			m_fileCollectController->setCollectSourceDirectory(
+				arguments.value(argToString(Argument::SourceDirectory)).toString());
+		}
+		if( arguments.contains(argToString(Argument::FilePattern)) )
+		{
+			m_fileCollectController->setFilePattern(
+				arguments.value(argToString(Argument::FilePattern)).toString());
+		}
+		if( arguments.contains(argToString(Argument::CollectRecursively)) )
+		{
+			m_fileCollectController->setSubfolderHandling(
+				arguments.value(argToString(Argument::CollectRecursively)).toBool() ?
+					FileCollectController::SubfolderHandling::Recursive :
+					FileCollectController::SubfolderHandling::NonRecursive);
+		}
+		if( arguments.contains(argToString(Argument::DestinationDirectory)) )
+		{
+			m_fileCollectController->setDestinationDirectory(
+				arguments.value(argToString(Argument::DestinationDirectory)).toString());
+		}
 
 		return true;
 	}

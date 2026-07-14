@@ -71,6 +71,7 @@ public:
 		FilePattern,
 		CollectRecursively,
 		DestinationDirectory,
+		OpenTransferFolder,
 	};
 	Q_ENUM(Argument)
 

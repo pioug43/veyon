@@ -61,6 +61,13 @@ WebApiVncBridge::WebApiVncBridge( QWebSocket* socket, ComputerControlInterface::
 			 this, &WebApiVncBridge::onFramebufferUpdateComplete, Qt::QueuedConnection );
 	connect( vncConnection, &VncConnection::framebufferSizeChanged,
 			 this, &WebApiVncBridge::onFramebufferSizeChanged, Qt::QueuedConnection );
+	connect( vncConnection, &VncConnection::cursorShapeUpdated,
+			 this, &WebApiVncBridge::onCursorShapeUpdated, Qt::QueuedConnection );
+
+	// demander la forme du curseur à l'hôte (Cursor pseudo-encoding côté amont) :
+	// sinon le curseur n'est ni dans le framebuffer ni transmis, et noVNC n'affiche
+	// aucune souris. On le relaie ensuite au client noVNC (cf. onCursorShapeUpdated).
+	vncConnection->setUseRemoteCursor( true );
 
 	// make the upstream connection deliver a continuous, reactive stream
 	setLiveUpdateMode();
@@ -288,8 +295,18 @@ bool WebApiVncBridge::parseClientMessage()
 			{
 				m_supportsExtendedDesktopSize = true;
 			}
+			else if( encoding == PseudoEncodingCursor )
+			{
+				m_supportsCursor = true;
+			}
 		}
 		m_buffer.remove( 0, messageSize );
+		// le client vient d'annoncer le support du curseur : si une forme est
+		// deja connue, on la pousse tout de suite (sinon au prochain update hote)
+		if( m_supportsCursor && m_haveCursor )
+		{
+			sendCursorUpdate();
+		}
 		return true;
 	}
 
@@ -529,6 +546,104 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 	m_updatePending = false;
 	m_forceFullUpdate = false;
 	m_dirtyRegion = QRegion();
+}
+
+
+
+void WebApiVncBridge::onCursorShapeUpdated( const QPixmap& cursorShape, int xh, int yh )
+{
+	m_cursorShape = cursorShape;
+	m_cursorHotspot = QPoint( xh, yh );
+	m_haveCursor = true;
+	sendCursorUpdate();
+}
+
+
+
+void WebApiVncBridge::sendCursorUpdate()
+{
+	if( m_state != State::Running || m_supportsCursor == false || m_haveCursor == false ||
+		m_socket == nullptr || m_socket->state() != QAbstractSocket::ConnectedState )
+	{
+		return;
+	}
+
+	// Cursor pseudo-encoding (-239) : forme + hotspot ; noVNC positionne ensuite le
+	// curseur sous le pointeur local (curseur cote client). Un curseur 0x0 le masque.
+	const QImage cursor = m_cursorShape.toImage().convertToFormat( QImage::Format_ARGB32 );
+	const int w = cursor.width();
+	const int h = cursor.height();
+
+	QByteArray rectsData;
+	appendUint16( rectsData, static_cast<quint16>( w > 0 ? qBound( 0, m_cursorHotspot.x(), w - 1 ) : 0 ) );	// x = hotspot X
+	appendUint16( rectsData, static_cast<quint16>( h > 0 ? qBound( 0, m_cursorHotspot.y(), h - 1 ) : 0 ) );	// y = hotspot Y
+	appendUint16( rectsData, static_cast<quint16>( w ) );
+	appendUint16( rectsData, static_cast<quint16>( h ) );
+	appendUint32( rectsData, static_cast<quint32>( PseudoEncodingCursor ) );
+	rectsData += encodeCursorRect( cursor );
+
+	QByteArray message;
+	message.append( static_cast<char>( 0 ) );	// message-type = FramebufferUpdate
+	message.append( static_cast<char>( 0 ) );	// padding
+	appendUint16( message, 1 );					// number-of-rectangles
+	message += rectsData;
+
+	m_socket->sendBinaryMessage( message );
+}
+
+
+
+QByteArray WebApiVncBridge::encodeCursorRect( const QImage& cursor ) const
+{
+	const int w = cursor.width();
+	const int h = cursor.height();
+	const int bytesPerPixel = qMax( 1, m_pixelFormat.bitsPerPixel / 8 );
+	const bool bigEndian = m_pixelFormat.bigEndian != 0;
+
+	QByteArray data;
+
+	// 1) donnees de pixels (format client), comme un rect Raw
+	for( int y = 0; y < h; ++y )
+	{
+		const auto* line = reinterpret_cast<const QRgb*>( cursor.constScanLine( y ) );
+		for( int x = 0; x < w; ++x )
+		{
+			const QRgb pixel = line[x];
+			const quint32 r = static_cast<quint32>( qRed( pixel ) ) * m_pixelFormat.redMax / 255;
+			const quint32 g = static_cast<quint32>( qGreen( pixel ) ) * m_pixelFormat.greenMax / 255;
+			const quint32 b = static_cast<quint32>( qBlue( pixel ) ) * m_pixelFormat.blueMax / 255;
+			const quint32 value = ( r << m_pixelFormat.redShift ) |
+								  ( g << m_pixelFormat.greenShift ) |
+								  ( b << m_pixelFormat.blueShift );
+			for( int byte = 0; byte < bytesPerPixel; ++byte )
+			{
+				const int shift = bigEndian ? ( bytesPerPixel - 1 - byte ) * 8 : byte * 8;
+				data.append( static_cast<char>( ( value >> shift ) & 0xFF ) );
+			}
+		}
+	}
+
+	// 2) bitmask 1-bpp (MSB d'abord), lignes alignees a l'octet : bit a 1 = pixel opaque
+	const int rowBytes = ( w + 7 ) / 8;
+	for( int y = 0; y < h; ++y )
+	{
+		const auto* line = reinterpret_cast<const QRgb*>( cursor.constScanLine( y ) );
+		for( int bx = 0; bx < rowBytes; ++bx )
+		{
+			quint8 maskByte = 0;
+			for( int bit = 0; bit < 8; ++bit )
+			{
+				const int x = bx * 8 + bit;
+				if( x < w && qAlpha( line[x] ) >= 128 )
+				{
+					maskByte |= static_cast<quint8>( 1 << ( 7 - bit ) );
+				}
+			}
+			data.append( static_cast<char>( maskByte ) );
+		}
+	}
+
+	return data;
 }
 
 

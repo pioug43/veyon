@@ -26,6 +26,8 @@
 
 #include <QByteArray>
 #include <QObject>
+#include <QPixmap>
+#include <QPoint>
 #include <QRegion>
 #include <QSize>
 
@@ -84,6 +86,7 @@ private:
 	enum RfbEncoding
 	{
 		EncodingRaw = 0,
+		PseudoEncodingCursor = -239,
 		PseudoEncodingDesktopSize = -223,
 		PseudoEncodingExtendedDesktopSize = -308
 	};
@@ -101,8 +104,11 @@ private:
 	void onImageUpdated( int x, int y, int w, int h );
 	void onFramebufferUpdateComplete();
 	void onFramebufferSizeChanged( int w, int h );
+	void onCursorShapeUpdated( const QPixmap& cursorShape, int xh, int yh );
 
 	void trySendFramebufferUpdate();
+	void sendCursorUpdate();		// pousse la forme du curseur (Cursor pseudo-encoding)
+	QByteArray encodeCursorRect( const QImage& cursor ) const;
 	QByteArray encodeRawRect( const QImage& image, const QRect& rect ) const;
 	void appendUint16( QByteArray& data, quint16 value ) const;
 	void appendUint32( QByteArray& data, quint32 value ) const;
@@ -119,6 +125,10 @@ private:
 
 	bool m_supportsDesktopSize{false};
 	bool m_supportsExtendedDesktopSize{false};
+	bool m_supportsCursor{false};		// client noVNC accepte le Cursor pseudo-encoding
+	bool m_haveCursor{false};			// une forme de curseur a déjà été reçue de l'hôte
+	QPixmap m_cursorShape{};
+	QPoint m_cursorHotspot{};
 
 	bool m_updatePending{false};
 	bool m_forceFullUpdate{true};

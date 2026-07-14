@@ -7,6 +7,24 @@ on:
       - '**'
 
 jobs:
+  test-ubuntu:
+    runs-on: ubuntu-latest
+    container: veyon/ci.linux.ubuntu.24.04
+    env:
+      CMAKE_FLAGS: -DWITH_TESTS=ON
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - run: git config --global --add safe.directory $GITHUB_WORKSPACE
+      - run: .ci/linux.ubuntu.24.04/script.sh $GITHUB_WORKSPACE /tmp
+      - run: ctest --test-dir /tmp --output-on-failure
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ubuntu-24.04-packages
+          path: veyon*.deb
+
   build-linux:
     strategy:
       matrix:

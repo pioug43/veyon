@@ -86,10 +86,14 @@ QByteArray WebApiConnection::encodedFramebufferData( QSize size, const QByteArra
 
 	m_framebufferEncoder.waitForFinished();
 
+	const auto encoderHasResult = m_framebufferEncoder.isStarted() &&
+		m_framebufferEncoder.isFinished() && m_framebufferEncoder.resultCount() > 0;
+
 	if( format != m_imageFormat ||
 		compression != m_imageCompression ||
 		quality != m_imageQuality ||
 		size != m_imageSize ||
+		encoderHasResult == false ||
 		m_framebufferEncoder.isCanceled() ||
 		m_framebufferEncoder.result().expired() )
 	{

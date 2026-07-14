@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Veyon Web Remote Control</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui,sans-serif;background:#111827;color:#e5e7eb}
+body{margin:0;display:grid;grid-template-rows:auto 1fr;min-height:100vh}header{padding:.8rem 1rem;background:#1f2937;display:flex;gap:.7rem;align-items:end;flex-wrap:wrap}
+label{display:grid;gap:.25rem;font-size:.8rem}input,select,button{font:inherit;padding:.5rem;border:1px solid #4b5563;border-radius:.35rem;background:#111827;color:inherit}button{cursor:pointer;background:#2563eb;border-color:#2563eb}button.secondary{background:#374151;border-color:#4b5563}button:disabled{opacity:.5;cursor:not-allowed}
+main{display:grid;place-items:center;overflow:auto;padding:1rem}canvas{max-width:100%;max-height:calc(100vh - 9rem);background:#000;box-shadow:0 0 0 1px #374151;outline:none}#status{margin-left:auto;align-self:center}dialog{max-width:42rem;background:#1f2937;color:inherit;border:1px solid #4b5563;border-radius:.5rem}dialog textarea{width:min(38rem,80vw);height:8rem;background:#111827;color:inherit}.row{display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem}
+</style>
+</head>
+<body>
+<header>
+  <label>Computer<input id="host" value="localhost"></label>
+  <label>Authentication method<input id="method" size="38" placeholder="method UUID"></label>
+  <button id="methods" class="secondary">Find methods</button>
+  <button id="authenticate">Authenticate</button>
+  <button id="disconnect" class="secondary" disabled>Disconnect</button>
+  <button id="clipboard" class="secondary" disabled>Send clipboard</button>
+  <span id="status" role="status">Disconnected</span>
+</header>
+<main><canvas id="screen" tabindex="0" aria-label="Remote computer screen"></canvas></main>
+<dialog id="credentialsDialog">
+  <form method="dialog">
+    <h2>Veyon credentials</h2>
+    <p>Enter the credentials object expected by the selected Veyon authentication method.</p>
+    <textarea id="credentials">{"username":"","password":""}</textarea>
+    <div class="row"><button value="cancel" class="secondary">Cancel</button><button id="confirmCredentials" value="default">Connect</button></div>
+  </form>
+</dialog>
+<script>
+const $=id=>document.getElementById(id), canvas=$('screen'), ctx=canvas.getContext('2d');
+let uid=null, polling=false, buttons=0, pendingPointer=null;
+const api=(path,options={})=>fetch('/api/v1/'+path,{...options,headers:{'Content-Type':'application/json',...(uid?{'Connection-Uid':uid}:{}),...(options.headers||{})}}).then(async r=>{if(!r.ok){let e;try{e=(await r.json()).error}catch(_){e={message:await r.text()}}throw Error(e.details||e.message||r.statusText)}return r});
+const setStatus=(text,error=false)=>{const el=$('status');el.textContent=text;el.style.color=error?'#fca5a5':'#e5e7eb'};
+$('methods').onclick=async()=>{try{const data=await (await api('authentication/'+encodeURIComponent($('host').value))).json();$('method').value=data.methods[0]||'';setStatus(data.methods.length+' method(s) available')}catch(e){setStatus(e.message,true)}};
+$('authenticate').onclick=()=>$('credentialsDialog').showModal();
+$('confirmCredentials').onclick=async e=>{e.preventDefault();try{const credentials=JSON.parse($('credentials').value);const data=await (await api('authentication/'+encodeURIComponent($('host').value),{method:'POST',body:JSON.stringify({method:$('method').value,credentials})})).json();uid=data['connection-uid'];$('credentialsDialog').close();$('disconnect').disabled=$('clipboard').disabled=false;setStatus('Connected');polling=true;poll()}catch(err){setStatus(err.message,true)}};
+$('disconnect').onclick=async()=>{polling=false;try{await api('authentication/'+encodeURIComponent($('host').value),{method:'DELETE'})}catch(_){}uid=null;$('disconnect').disabled=$('clipboard').disabled=true;setStatus('Disconnected')};
+$('clipboard').onclick=async()=>{try{const text=await navigator.clipboard.readText();await api('input/clipboard',{method:'POST',body:JSON.stringify({text})});setStatus('Clipboard sent')}catch(e){setStatus('Clipboard access failed: '+e.message,true)}};
+async function poll(){while(polling){try{const r=await api('framebuffer?format=jpg&quality=70');const bitmap=await createImageBitmap(await r.blob());if(canvas.width!==bitmap.width||canvas.height!==bitmap.height){canvas.width=bitmap.width;canvas.height=bitmap.height}ctx.drawImage(bitmap,0,0);bitmap.close()}catch(e){if(!e.message.includes('not yet available'))setStatus(e.message,true)}await new Promise(r=>setTimeout(r,150))}}
+const coords=e=>{const r=canvas.getBoundingClientRect();return{x:Math.max(0,Math.min(canvas.width-1,Math.floor((e.clientX-r.left)*canvas.width/r.width))),y:Math.max(0,Math.min(canvas.height-1,Math.floor((e.clientY-r.top)*canvas.height/r.height)))}};
+const sendPointer=e=>{if(!uid||!canvas.width)return;pendingPointer={...coords(e),buttonMask:buttons};requestAnimationFrame(async()=>{if(!pendingPointer)return;const p=pendingPointer;pendingPointer=null;try{await api('input/pointer',{method:'POST',body:JSON.stringify(p)})}catch(err){setStatus(err.message,true)}})};
+canvas.oncontextmenu=e=>e.preventDefault();canvas.onmousedown=e=>{buttons|=e.button===0?1:e.button===1?2:e.button===2?4:0;canvas.focus();sendPointer(e)};canvas.onmouseup=e=>{buttons&=~(e.button===0?1:e.button===1?2:e.button===2?4:0);sendPointer(e)};canvas.onmousemove=sendPointer;
+canvas.onwheel=e=>{e.preventDefault();const old=buttons;buttons|=e.deltaY<0?8:16;sendPointer(e);setTimeout(()=>{buttons=old;sendPointer(e)},30)};
+const special={Backspace:0xff08,Tab:0xff09,Enter:0xff0d,Escape:0xff1b,Delete:0xffff,Home:0xff50,ArrowLeft:0xff51,ArrowUp:0xff52,ArrowRight:0xff53,ArrowDown:0xff54,PageUp:0xff55,PageDown:0xff56,End:0xff57,Insert:0xff63,F1:0xffbe,F2:0xffbf,F3:0xffc0,F4:0xffc1,F5:0xffc2,F6:0xffc3,F7:0xffc4,F8:0xffc5,F9:0xffc6,F10:0xffc7,F11:0xffc8,F12:0xffc9,Shift:0xffe1,Control:0xffe3,Alt:0xffe9,Meta:0xffeb};
+const keysym=e=>special[e.key]??(e.key.length===1?(e.key.codePointAt(0)>255?0x01000000|e.key.codePointAt(0):e.key.codePointAt(0)):null);
+const sendKey=async(e,pressed)=>{const keyCode=keysym(e);if(!uid||keyCode===null)return;e.preventDefault();try{await api('input/key',{method:'POST',body:JSON.stringify({keyCode,pressed})})}catch(err){setStatus(err.message,true)}};canvas.onkeydown=e=>sendKey(e,true);canvas.onkeyup=e=>sendKey(e,false);
+window.addEventListener('blur',()=>{buttons=0});
+</script>
+</body>
+</html>

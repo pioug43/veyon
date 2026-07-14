@@ -113,6 +113,7 @@ static QHttpServerResponse convertResponse(const WebApiController::Request& requ
 		case WebApiController::Error::FramebufferNotAvailable: return QHttpServerResponse::StatusCode::ServiceUnavailable;
 		case WebApiController::Error::FramebufferEncodingError: return QHttpServerResponse::StatusCode::InternalServerError;
 		case WebApiController::Error::ProtocolMismatch: return QHttpServerResponse::StatusCode::NotImplemented;
+		case WebApiController::Error::ConnectionNotReady: return QHttpServerResponse::StatusCode::ServiceUnavailable;
 		}
 		return QHttpServerResponse::StatusCode::BadRequest;
 	}();
@@ -157,6 +158,7 @@ WebApiHttpServer::~WebApiHttpServer()
 {
 	delete m_server;
 
+	m_threadPool.waitForDone();
 	delete m_controller;
 }
 
@@ -325,13 +327,20 @@ bool WebApiHttpServer::start()
 	auto success = true;
 
 	success &= addRoute<Method::Get>(QStringLiteral("hoststate/<arg>"), &WebApiController::getHostState);
-	success &= addRoute<Method::Get>( QStringLiteral("authentication/"), &WebApiController::getAuthenticationMethods );
+	success &= addRoute<Method::Get>( QStringLiteral("authentication/<arg>"), &WebApiController::getAuthenticationMethods );
 	success &= addRoute<Method::Post>( QStringLiteral("authentication/<arg>"), &WebApiController::performAuthentication );
 	success &= addRoute<Method::Delete>( QStringLiteral("authentication/<arg>"), &WebApiController::closeConnection );
 	success &= addRoute<Method::Get>( QStringLiteral("framebuffer"), &WebApiController::getFramebuffer );
+	success &= addRoute<Method::Get>( QStringLiteral("connection"), &WebApiController::getConnectionInformation );
+	success &= addRoute<Method::Post>( QStringLiteral("input/pointer"), &WebApiController::sendPointerEvent );
+	success &= addRoute<Method::Post>( QStringLiteral("input/key"), &WebApiController::sendKeyEvent );
+	success &= addRoute<Method::Post>( QStringLiteral("input/clipboard"), &WebApiController::sendClipboardText );
+	success &= addRoute<Method::Post>( QStringLiteral("broadcast/start"), &WebApiController::startScreenBroadcast );
+	success &= addRoute<Method::Post>( QStringLiteral("broadcast/stop"), &WebApiController::stopScreenBroadcast );
 	success &= addRoute<Method::Get>( QStringLiteral("feature"), &WebApiController::listFeatures );
 	success &= addRoute<Method::Get>( QStringLiteral("feature/<arg>"), &WebApiController::getFeatureStatus );
 	success &= addRoute<Method::Put>( QStringLiteral("feature/<arg>"), &WebApiController::setFeatureStatus );
+	success &= addRoute<Method::Post>( QStringLiteral("feature/<arg>/control"), &WebApiController::controlFeature );
 	success &= addRoute<Method::Get>( QStringLiteral("user"), &WebApiController::getUserInformation );
 	success &= addRoute<Method::Get>(QStringLiteral("session"), &WebApiController::getSessionInformation);
 
@@ -340,6 +349,16 @@ bool WebApiHttpServer::start()
 		success &= addRoute<Method::Get>(QStringLiteral("debug/sleep/<arg>"), &WebApiController::sleep);
 		success &= bool(m_server->route(QStringLiteral("/api/v1/debug/info"), [this]() { return getDebugInformation(); }));
 	}
+
+	success &= bool(m_server->route(QStringLiteral("/remote-control"), [] {
+		QFile page(QStringLiteral(":/webapi/remote-control.html"));
+		if( page.open(QFile::ReadOnly) == false )
+		{
+			return QHttpServerResponse{QByteArrayLiteral("text/plain"), {},
+				QHttpServerResponse::StatusCode::InternalServerError};
+		}
+		return QHttpServerResponse{QByteArrayLiteral("text/html; charset=utf-8"), page.readAll()};
+	}));
 
 	success &= bool(m_server->route(QStringLiteral(".*"), [] {
 		return QHttpServerResponse{
@@ -415,7 +434,7 @@ bool WebApiHttpServer::setupTls()
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
 	auto sslConfig = QSslConfiguration::defaultConfiguration();
 	sslConfig.setLocalCertificate(certificate);
-	sslConfig.setPrivateKey(QSslKey(&privateKeyFile, QSsl::Rsa));
+	sslConfig.setPrivateKey(privateKey);
 
 	auto sslServer = new QSslServer(this);
 	sslServer->setSslConfiguration(sslConfig);

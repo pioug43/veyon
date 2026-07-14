@@ -52,10 +52,16 @@ public:
 		Height,
 		Feature,
 		Name,
+		DisplayName,
+		DisplayNameActive,
+		Description,
+		IconUrl,
+		Flags,
 		Uid,
 		ParentUid,
 		Active,
 		Arguments,
+		Operation,
 		Login,
 		FullName,
 		SessionId,
@@ -63,6 +69,23 @@ public:
 		SessionClientAddress,
 		SessionClientName,
 		SessionHostName,
+		ServerVersion,
+		Framebuffer,
+		Valid,
+		Screens,
+		Index,
+		Geometry,
+		X,
+		Y,
+		ButtonMask,
+		KeyCode,
+		Pressed,
+		Text,
+		TargetConnectionUids,
+		Mode,
+		Token,
+		Host,
+		Port,
 		ValidUntil
 	};
 	Q_ENUM(Key)
@@ -82,6 +105,7 @@ public:
 		FramebufferNotAvailable,
 		FramebufferEncodingError,
 		ProtocolMismatch,
+		ConnectionNotReady,
 	};
 
 	struct Request
@@ -120,9 +144,16 @@ public:
 	Response closeConnection( const Request& request, const QString& host );
 
 	Response getFramebuffer( const Request& request );
+	Response getConnectionInformation( const Request& request );
+	Response sendPointerEvent( const Request& request );
+	Response sendKeyEvent( const Request& request );
+	Response sendClipboardText( const Request& request );
+	Response startScreenBroadcast( const Request& request );
+	Response stopScreenBroadcast( const Request& request );
 
 	Response listFeatures( const Request& request );
 	Response setFeatureStatus( const Request& request, const QString& feature );
+	Response controlFeature( const Request& request, const QString& feature );
 	Response getFeatureStatus( const Request& request, const QString& feature );
 
 	Response getUserInformation( const Request& request );
@@ -137,6 +168,7 @@ public:
 private:
 	void runInWorkerThread(const std::function<void()>& functor) const;
 	void runInWorkerThreadNonBlocking(const std::function<void()>& functor) const;
+	static void runInCoreThread(const std::function<void()>& functor);
 
 	template<class T>
 	T runInWorkerThread(const std::function<T()>& functor) const;
@@ -166,6 +198,9 @@ private:
 	using LockingConnectionPointer = LockingPointer<WebApiConnectionPointer>;
 
 	LockingConnectionPointer lookupConnection( const Request& request );
+	Response lookupBroadcastConnections( const Request& request,
+									   ComputerControlInterface::Pointer& source,
+									   ComputerControlInterfaceList& targets );
 
 	using CheckFunction = std::function<Response(const WebApiController*, const QVariantMap &)>;
 

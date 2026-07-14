@@ -26,6 +26,9 @@
 #include <QBuffer>
 #include <QEventLoop>
 #include <QImageWriter>
+#include <initializer_list>
+#include <limits>
+#include <utility>
 
 #include "ComputerControlInterface.h"
 #include "FeatureManager.h"
@@ -49,15 +52,24 @@ WebApiController::WebApiController( const WebApiConfiguration& configuration, QO
 
 	m_workerObject = new QObject;
 	m_workerObject->moveToThread(m_workerThread);
+	connect(m_workerThread, &QThread::finished, m_workerObject, &QObject::deleteLater);
 }
 
 
 
 WebApiController::~WebApiController()
 {
-	QWriteLocker connectionsWriteLocker{ &m_connectionsLock };
+	{
+		QWriteLocker connectionsWriteLocker{ &m_connectionsLock };
+		m_connections.clear();
+	}
 
-	m_connections.clear();
+	// All custom connection deleters queue their work in the worker thread.
+	// Wait for that work before stopping the thread and destroying its event loop.
+	runInWorkerThread([] {});
+	m_workerThread->quit();
+	m_workerThread->wait();
+	m_workerObject = nullptr;
 }
 
 
@@ -77,7 +89,7 @@ WebApiController::Response WebApiController::getHostState(const Request& request
 
 	if (VeyonCore::platform().networkFunctions().ping(host) == PlatformNetworkFunctions::PingResult::ReplyReceived)
 	{
-		return QByteArrayLiteral("up");
+		return QVariantMap{{k2s(Key::State), QByteArrayLiteral("up")}};
 	}
 
 	return QVariantMap{{k2s(Key::State), QByteArrayLiteral("down")}};
@@ -217,6 +229,12 @@ WebApiController::Response WebApiController::performAuthentication( const Reques
 		connection->lock();
 
 		m_connectionsLock.lockForWrite();
+		if( m_connections.size() >= m_configuration.connectionLimit() )
+		{
+			m_connectionsLock.unlock();
+			connection->unlock();
+			return Error::ConnectionLimitReached;
+		}
 		m_connections[uuid] = connection;
 		m_connectionsLock.unlock();
 
@@ -324,6 +342,255 @@ WebApiController::Response WebApiController::getFramebuffer( const Request& requ
 
 
 
+WebApiController::Response WebApiController::getConnectionInformation( const Request& request )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	const auto connection = lookupConnection( request );
+	const auto controlInterface = connection->controlInterface();
+	const auto framebufferSize = controlInterface->framebuffer().size();
+
+	QVariantList screens;
+	for( const auto& screen : controlInterface->screens() )
+	{
+		screens.append(QVariantMap{
+			{ k2s(Key::Index), screen.index },
+			{ k2s(Key::Name), screen.name },
+			{ k2s(Key::Geometry), QVariantMap{
+				{ k2s(Key::X), screen.geometry.x() },
+				{ k2s(Key::Y), screen.geometry.y() },
+				{ k2s(Key::Width), screen.geometry.width() },
+				{ k2s(Key::Height), screen.geometry.height() },
+			} },
+		});
+	}
+
+	return QVariantMap{
+		{ k2s(Key::State), EnumHelper::toString(controlInterface->state()) },
+		{ k2s(Key::ServerVersion), EnumHelper::toString(controlInterface->serverVersion()) },
+		{ k2s(Key::Framebuffer), QVariantMap{
+			{ k2s(Key::Width), framebufferSize.width() },
+			{ k2s(Key::Height), framebufferSize.height() },
+			{ k2s(Key::Valid), controlInterface->hasValidFramebuffer() },
+		} },
+		{ k2s(Key::Screens), screens },
+	};
+}
+
+
+
+WebApiController::Response WebApiController::sendPointerEvent( const Request& request )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	bool xValid = false;
+	bool yValid = false;
+	bool buttonMaskValid = false;
+	const auto x = request.data.value(k2s(Key::X)).toInt(&xValid);
+	const auto y = request.data.value(k2s(Key::Y)).toInt(&yValid);
+	const auto buttonMask = request.data.value(k2s(Key::ButtonMask)).toInt(&buttonMaskValid);
+	const auto connection = lookupConnection( request );
+	const auto controlInterface = connection->controlInterface();
+	const auto framebufferSize = controlInterface->framebuffer().size();
+
+	if( xValid == false || yValid == false || buttonMaskValid == false ||
+		x < 0 || y < 0 || x >= framebufferSize.width() || y >= framebufferSize.height() ||
+		buttonMask < 0 || buttonMask > 255 )
+	{
+		return Error::InvalidData;
+	}
+
+	const auto vncConnection = controlInterface->vncConnection();
+	if( vncConnection == nullptr || vncConnection->isConnected() == false )
+	{
+		return Error::ConnectionNotReady;
+	}
+
+	runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
+	vncConnection->mouseEvent(x, y, buttonMask);
+
+	return {};
+}
+
+
+
+WebApiController::Response WebApiController::sendKeyEvent( const Request& request )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	bool keyCodeValid = false;
+	const auto keyCode = request.data.value(k2s(Key::KeyCode)).toULongLong(&keyCodeValid);
+	if( keyCodeValid == false || keyCode > std::numeric_limits<VncConnection::KeyCode>::max() ||
+		request.data.contains(k2s(Key::Pressed)) == false )
+	{
+		return Error::InvalidData;
+	}
+
+	const auto connection = lookupConnection( request );
+	const auto controlInterface = connection->controlInterface();
+	const auto vncConnection = controlInterface->vncConnection();
+	if( vncConnection == nullptr || vncConnection->isConnected() == false )
+	{
+		return Error::ConnectionNotReady;
+	}
+
+	runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
+	vncConnection->keyEvent(static_cast<VncConnection::KeyCode>(keyCode),
+						request.data.value(k2s(Key::Pressed)).toBool());
+
+	return {};
+}
+
+
+
+WebApiController::Response WebApiController::sendClipboardText( const Request& request )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	static constexpr auto MaximumClipboardCharacters = 1024 * 1024;
+	if( request.data.contains(k2s(Key::Text)) == false ||
+		request.data.value(k2s(Key::Text)).toString().size() > MaximumClipboardCharacters )
+	{
+		return Error::InvalidData;
+	}
+
+	const auto connection = lookupConnection( request );
+	const auto vncConnection = connection->controlInterface()->vncConnection();
+	if( vncConnection == nullptr || vncConnection->isConnected() == false )
+	{
+		return Error::ConnectionNotReady;
+	}
+
+	vncConnection->clientCut(request.data.value(k2s(Key::Text)).toString());
+
+	return {};
+}
+
+
+
+WebApiController::Response WebApiController::startScreenBroadcast( const Request& request )
+{
+	m_apiTotalRequestsCounter++;
+
+	ComputerControlInterface::Pointer source;
+	ComputerControlInterfaceList targets;
+	const auto lookupResponse = lookupBroadcastConnections(request, source, targets);
+	if( lookupResponse.error != Error::NoError )
+	{
+		return lookupResponse;
+	}
+
+	const auto mode = request.data.value(k2s(Key::Mode), QStringLiteral("fullScreen")).toString();
+	const Feature::Uid clientFeatureUid = mode == QStringLiteral("fullScreen") ?
+		Feature::Uid{QStringLiteral("7b6231bd-eb89-45d3-af32-f70663b2f878")} :
+		mode == QStringLiteral("window") ?
+			Feature::Uid{QStringLiteral("ae45c3db-dc2e-4204-ae8b-374cdab8c62c")} : Feature::Uid{};
+
+	auto demoServerHost = request.data.value(k2s(Key::Host)).toString();
+	if( demoServerHost.isEmpty() )
+	{
+		demoServerHost = source->computer().hostName();
+	}
+	if( demoServerHost == QStringLiteral("localhost") || demoServerHost == QStringLiteral("127.0.0.1") ||
+		demoServerHost == QStringLiteral("::1") )
+	{
+		return { Error::InvalidData,
+			QStringLiteral("host must be an address of the teacher computer reachable by all target computers") };
+	}
+
+	bool portValid = true;
+	const auto demoServerPort = request.data.contains(k2s(Key::Port)) ?
+		request.data.value(k2s(Key::Port)).toInt(&portValid) : VeyonCore::config().demoServerPort();
+	if( clientFeatureUid.isNull() || demoServerHost.isEmpty() || portValid == false ||
+		demoServerPort < 1 || demoServerPort > 65535 )
+	{
+		return Error::InvalidData;
+	}
+
+	const auto token = QUuid::createUuid().toString(QUuid::WithoutBraces).toUtf8();
+	const Feature::Uid serverFeatureUid{QStringLiteral("e4b6e743-1f5b-491d-9364-e091086200f4")};
+	const QVariantMap serverArguments{
+		{ QStringLiteral("demoAccessToken"), token },
+		{ QStringLiteral("demoServerPort"), demoServerPort },
+	};
+	const QVariantMap clientArguments{
+		{ QStringLiteral("demoAccessToken"), token },
+		{ QStringLiteral("demoServerHost"), demoServerHost },
+		{ QStringLiteral("demoServerPort"), demoServerPort },
+	};
+
+	runInCoreThread([&] {
+		VeyonCore::featureManager().controlFeature(serverFeatureUid, FeatureProviderInterface::Operation::Start,
+											  serverArguments, {source});
+		VeyonCore::featureManager().controlFeature(clientFeatureUid, FeatureProviderInterface::Operation::Start,
+											  clientArguments, targets);
+	});
+
+	return QVariantMap{
+		{ k2s(Key::Active), true },
+		{ k2s(Key::Mode), mode },
+		{ k2s(Key::Token), QString::fromUtf8(token) },
+		{ k2s(Key::Host), demoServerHost },
+		{ k2s(Key::Port), demoServerPort },
+	};
+}
+
+
+
+WebApiController::Response WebApiController::stopScreenBroadcast( const Request& request )
+{
+	m_apiTotalRequestsCounter++;
+
+	ComputerControlInterface::Pointer source;
+	ComputerControlInterfaceList targets;
+	const auto lookupResponse = lookupBroadcastConnections(request, source, targets);
+	if( lookupResponse.error != Error::NoError )
+	{
+		return lookupResponse;
+	}
+
+	const Feature::Uid serverFeatureUid{QStringLiteral("e4b6e743-1f5b-491d-9364-e091086200f4")};
+	const Feature::Uid fullScreenClientFeatureUid{QStringLiteral("7b6231bd-eb89-45d3-af32-f70663b2f878")};
+	const Feature::Uid windowClientFeatureUid{QStringLiteral("ae45c3db-dc2e-4204-ae8b-374cdab8c62c")};
+
+	runInCoreThread([&] {
+		VeyonCore::featureManager().controlFeature(fullScreenClientFeatureUid, FeatureProviderInterface::Operation::Stop,
+											  {}, targets);
+		VeyonCore::featureManager().controlFeature(windowClientFeatureUid, FeatureProviderInterface::Operation::Stop,
+											  {}, targets);
+		VeyonCore::featureManager().controlFeature(serverFeatureUid, FeatureProviderInterface::Operation::Stop,
+											  {}, {source});
+	});
+
+	return QVariantMap{{ k2s(Key::Active), false }};
+}
+
+
+
 WebApiController::Response WebApiController::listFeatures( const Request& request )
 {
 	m_apiTotalRequestsCounter++;
@@ -342,7 +609,30 @@ WebApiController::Response WebApiController::listFeatures( const Request& reques
 
 	for( const auto& feature : features )
 	{
+		QStringList flags;
+		for( const auto& flag : std::initializer_list<std::pair<Feature::Flag, QString>>{
+				 { Feature::Flag::Mode, QStringLiteral("mode") },
+				 { Feature::Flag::Action, QStringLiteral("action") },
+				 { Feature::Flag::Session, QStringLiteral("session") },
+				 { Feature::Flag::Meta, QStringLiteral("meta") },
+				 { Feature::Flag::Option, QStringLiteral("option") },
+				 { Feature::Flag::Master, QStringLiteral("master") },
+				 { Feature::Flag::Service, QStringLiteral("service") },
+				 { Feature::Flag::Worker, QStringLiteral("worker") },
+				 { Feature::Flag::Builtin, QStringLiteral("builtin") } })
+		{
+			if( feature.testFlag(flag.first) )
+			{
+				flags.append(flag.second);
+			}
+		}
+
 		QVariantMap featureObject{ { k2s(Key::Name), feature.name() },
+								   { k2s(Key::DisplayName), feature.displayName() },
+								   { k2s(Key::DisplayNameActive), feature.displayNameActive() },
+								   { k2s(Key::Description), feature.description() },
+								   { k2s(Key::IconUrl), feature.iconUrl() },
+								   { k2s(Key::Flags), flags },
 								   { k2s(Key::Uid), feature.uid().toString(QUuid::WithoutBraces) },
 								   { k2s(Key::ParentUid), feature.parentUid().toString(QUuid::WithoutBraces) },
 								   { k2s(Key::Active), activeFeatures.contains(feature.uid()) } };
@@ -376,11 +666,67 @@ WebApiController::Response WebApiController::setFeatureStatus( const Request& re
 																	 : FeatureProviderInterface::Operation::Stop;
 	const auto arguments = request.data[k2s(Key::Arguments)].toMap();
 
-	runInWorkerThread([&] {
+	runInCoreThread([&] {
 		VeyonCore::featureManager().controlFeature(Feature::Uid{feature}, operation, arguments, {connection->controlInterface()});
 	});
 
 	return {};
+}
+
+
+
+WebApiController::Response WebApiController::controlFeature( const Request& request, const QString& feature )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError ||
+		( checkResponse = checkFeature( feature ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	const auto operationName = request.data.value(k2s(Key::Operation)).toString();
+	const auto validOperation = operationName == QStringLiteral("initialize") ||
+		operationName == QStringLiteral("start") || operationName == QStringLiteral("stop");
+	const auto operation = operationName == QStringLiteral("initialize") ? FeatureProviderInterface::Operation::Initialize :
+		operationName == QStringLiteral("start") ? FeatureProviderInterface::Operation::Start :
+		FeatureProviderInterface::Operation::Stop;
+	if( validOperation == false )
+	{
+		return Error::InvalidData;
+	}
+
+	const auto connection = lookupConnection( request );
+	ComputerControlInterfaceList controlInterfaces{connection->controlInterface()};
+	const auto targetValues = request.data.value(k2s(Key::TargetConnectionUids)).toList();
+	if( targetValues.isEmpty() == false )
+	{
+		QReadLocker connectionsReadLocker{&m_connectionsLock};
+		for( const auto& targetValue : targetValues )
+		{
+			const auto targetConnection = m_connections.value(QUuid{targetValue.toString()});
+			if( targetConnection.isNull() )
+			{
+				return Error::InvalidConnection;
+			}
+			const auto targetInterface = targetConnection->controlInterface();
+			if( controlInterfaces.contains(targetInterface) == false )
+			{
+				controlInterfaces.append(targetInterface);
+			}
+		}
+	}
+	const auto arguments = request.data.value(k2s(Key::Arguments)).toMap();
+	runInCoreThread([&] {
+		VeyonCore::featureManager().controlFeature(Feature::Uid{feature}, operation, arguments,
+											  controlInterfaces);
+	});
+
+	return QVariantMap{
+		{ k2s(Key::Feature), feature },
+		{ k2s(Key::Operation), operationName },
+	};
 }
 
 
@@ -390,7 +736,8 @@ WebApiController::Response WebApiController::getFeatureStatus( const Request& re
 	m_apiTotalRequestsCounter++;
 
 	Response checkResponse{};
-	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError ||
+		( checkResponse = checkFeature( feature ) ).error != Error::NoError )
 	{
 		return checkResponse;
 	}
@@ -490,10 +837,10 @@ QString WebApiController::getConnectionDetails()
 		const auto connection = it.value();
 
 		rows.append({it.key().toString(QUuid::WithoutBraces),
-					 EnumHelper::toString(connection->controlInterface()->state()),
-					 connection->controlInterface()->computer().hostName(),
-					 connection->controlInterface()->userLoginName(),
-					 EnumHelper::toString(connection->controlInterface()->serverVersion()),
+					 EnumHelper::toString(connection->controlInterface()->state()).toHtmlEscaped(),
+					 connection->controlInterface()->computer().hostName().toHtmlEscaped(),
+					 connection->controlInterface()->userLoginName().toHtmlEscaped(),
+					 EnumHelper::toString(connection->controlInterface()->serverVersion()).toHtmlEscaped(),
 					});
 	}
 
@@ -542,6 +889,7 @@ QString WebApiController::errorString( WebApiController::Error error )
 	case Error::FramebufferNotAvailable: return QStringLiteral("Framebuffer not yet available");
 	case Error::FramebufferEncodingError: return QStringLiteral("Framebuffer encoding error");
 	case Error::ProtocolMismatch: return QStringLiteral("Protocol mismatch error");
+	case Error::ConnectionNotReady: return QStringLiteral("Connection is not ready for remote control");
 	}
 
 	return {};
@@ -559,6 +907,20 @@ void WebApiController::runInWorkerThread(const std::function<void()>& functor) c
 void WebApiController::runInWorkerThreadNonBlocking(const std::function<void()>& functor) const
 {
 	QMetaObject::invokeMethod(m_workerObject, functor, Qt::QueuedConnection);
+}
+
+
+
+void WebApiController::runInCoreThread(const std::function<void()>& functor)
+{
+	const auto core = VeyonCore::instance();
+	if( QThread::currentThread() == core->thread() )
+	{
+		functor();
+		return;
+	}
+
+	QMetaObject::invokeMethod(core, functor, Qt::BlockingQueuedConnection);
 }
 
 
@@ -639,6 +1001,58 @@ WebApiController::LockingConnectionPointer WebApiController::lookupConnection( c
 	QReadLocker connectionsReadLocker{&m_connectionsLock};
 
 	return m_connections.value(QUuid{lookupHeaderField(request, connectionUidHeaderFieldName())});
+}
+
+
+
+WebApiController::Response WebApiController::lookupBroadcastConnections(
+	const Request& request, ComputerControlInterface::Pointer& source, ComputerControlInterfaceList& targets )
+{
+	const QUuid sourceUuid{lookupHeaderField(request, connectionUidHeaderFieldName())};
+	const auto targetValues = request.data.value(k2s(Key::TargetConnectionUids)).toList();
+	if( sourceUuid.isNull() || targetValues.isEmpty() )
+	{
+		return Error::InvalidData;
+	}
+
+	QReadLocker connectionsReadLocker{&m_connectionsLock};
+	const auto sourceConnection = m_connections.value(sourceUuid);
+	if( sourceConnection.isNull() )
+	{
+		return Error::InvalidConnection;
+	}
+	source = sourceConnection->controlInterface();
+
+	for( const auto& targetValue : targetValues )
+	{
+		const QUuid targetUuid{targetValue.toString()};
+		const auto targetConnection = m_connections.value(targetUuid);
+		if( targetUuid.isNull() || targetConnection.isNull() )
+		{
+			targets.clear();
+			return Error::InvalidConnection;
+		}
+		if( targetUuid != sourceUuid )
+		{
+			const auto targetInterface = targetConnection->controlInterface();
+			if( targetInterface->state() != ComputerControlInterface::State::Connected )
+			{
+				targets.clear();
+				return Error::ConnectionNotReady;
+			}
+			if( targets.contains(targetInterface) == false )
+			{
+				targets.append(targetInterface);
+			}
+		}
+	}
+
+	if( targets.isEmpty() )
+	{
+		return Error::InvalidData;
+	}
+
+	return {};
 }
 
 

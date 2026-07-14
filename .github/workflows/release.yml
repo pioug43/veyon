@@ -8,7 +8,24 @@ permissions:
   contents: write
 
 jobs:
+  test-ubuntu:
+    runs-on: ubuntu-latest
+    container: veyon/ci.linux.ubuntu.24.04
+    env:
+      CMAKE_FLAGS: -DWITH_TESTS=ON
+      QT_QPA_PLATFORM: offscreen
+      CI_COMMIT_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - run: git config --global --add safe.directory $GITHUB_WORKSPACE
+      - run: .ci/linux.ubuntu.24.04/script.sh $GITHUB_WORKSPACE /tmp
+      - run: ctest --test-dir /tmp --output-on-failure
+
   build-linux:
+    needs: test-ubuntu
     strategy:
       matrix:
         dist:

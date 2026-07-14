@@ -57,6 +57,13 @@ class Test_VeyonWebAPI(unittest.TestCase):
 		assert 'sessionClientName' in session_information
 		assert 'sessionHostName' in session_information
 
+	def test_connection_information(self):
+		connection_information = self.client.connection_information()
+		assert 'state' in connection_information
+		assert 'serverVersion' in connection_information
+		assert 'framebuffer' in connection_information
+		assert 'screens' in connection_information
+
 	def test_features(self):
 		available_features = self.client.available_features()
 		uids = [value['uid'] for value in available_features]

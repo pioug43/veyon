@@ -14,6 +14,10 @@ permissions:
 jobs:
   build-windows:
     runs-on: ubuntu-latest
+    env:
+      # MXE ne fournit pas OpenLDAP → on construit sans le plugin LDAP
+      # (postes = auth keyfile ; LDAP reste sur le broker Linux).
+      CMAKE_FLAGS: -DWITH_LDAP=OFF
     container:
       image: ghcr.io/${{ github.repository_owner }}/veyon-ci-windows:latest
       credentials:

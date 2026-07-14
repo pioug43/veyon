@@ -12,6 +12,14 @@ else()
 	set(DLL_DDENGINE "ddengine.dll")
 endif()
 
+# DLL LDAP/SASL copiées seulement si le plugin LDAP est construit (WITH_LDAP).
+set(WINDOWS_LDAP_DLL_COMMANDS)
+if(WITH_LDAP)
+	set(WINDOWS_LDAP_DLL_COMMANDS
+		COMMAND cp ${DLLDIR}/libsasl2-3.dll ${WINDOWS_INSTALL_FILES}
+		COMMAND cp ${DLLDIR}/libldap.dll ${DLLDIR}/liblber.dll ${WINDOWS_INSTALL_FILES})
+endif()
+
 add_custom_target(windows-binaries
 	COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --config $<CONFIGURATION>
 	COMMAND rm -rf ${WINDOWS_INSTALL_FILES}*
@@ -30,8 +38,7 @@ add_custom_target(windows-binaries
 	COMMAND cp ${DLLDIR}/libpng16-16.dll ${WINDOWS_INSTALL_FILES}
 	COMMAND cp ${DLLDIR}/libcrypto-3*.dll ${DLLDIR}/libssl-3*.dll ${WINDOWS_INSTALL_FILES}
 	COMMAND cp ${DLLDIR}/libqca-qt6.dll ${WINDOWS_INSTALL_FILES}
-	COMMAND cp ${DLLDIR}/libsasl2-3.dll ${WINDOWS_INSTALL_FILES}
-	COMMAND cp ${DLLDIR}/libldap.dll ${DLLDIR}/liblber.dll ${WINDOWS_INSTALL_FILES}
+	${WINDOWS_LDAP_DLL_COMMANDS}
 	COMMAND cp ${DLLDIR}/interception.dll ${WINDOWS_INSTALL_FILES}
 	COMMAND cp ${DLLDIR}/liblzo2-2.dll ${WINDOWS_INSTALL_FILES}
 	COMMAND cp ${DLLDIR}/libvncclient.dll ${WINDOWS_INSTALL_FILES}

@@ -104,13 +104,6 @@ public:
 	bool handleFeatureMessage( VeyonWorkerInterface& worker, const FeatureMessage& message ) override;
 
 private:
-	enum class Argument
-	{
-		BlockedApps,	// QStringList : noms d'exécutables interdits
-		Sites,			// QStringList : domaines
-		SitesMode,		// QString : "block" | "allow"
-	};
-
 	enum class FeatureCommand
 	{
 		StartExam,

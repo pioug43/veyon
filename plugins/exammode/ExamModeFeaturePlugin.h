@@ -116,7 +116,10 @@ private:
 	void killApplication( const QString& executable ) const;
 	void applyHostsBlocking( const QStringList& sites );
 	void revertHostsBlocking();
+	void removeHostsSection();		// retire notre section du fichier hosts (sans garde)
+	void flushDnsCache() const;		// purge le cache DNS résolveur pour un effet immédiat
 	static QString hostsFilePath();
+	static QString hostsSignature( const QStringList& sites, const QString& mode );
 
 	const Feature m_examModeFeature;
 	const FeatureList m_features;
@@ -127,6 +130,7 @@ private:
 	QStringList m_sites{};
 	QString m_sitesMode{QStringLiteral("block")};
 	bool m_hostsModified{false};
+	QString m_hostsSignature{};		// évite de réécrire hosts si sites+mode inchangés
 
 	// délimiteurs de notre section dans le fichier hosts (retrait propre au stop)
 	static constexpr auto HostsMarkerBegin = "# >>> Veyon ExamMode >>>";

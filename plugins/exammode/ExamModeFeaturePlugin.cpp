@@ -46,6 +46,14 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 						   "and blocked websites are made unreachable while active." ) ),
 	m_features( { m_examModeFeature } )
 {
+	// Filet de sécurité au démarrage du service : si un examen précédent s'est
+	// terminé par un crash/redémarrage, le fichier hosts peut être resté modifié
+	// (postes injoignables). On nettoie toute section résiduelle : un examen
+	// encore actif sera ré-appliqué par le portail (re-push chaque minute).
+	if( VeyonCore::component() == VeyonCore::Component::Service )
+	{
+		removeHostsSection();
+	}
 }
 
 
@@ -150,23 +158,38 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonWorkerInterface& worker, 
 void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, const QStringList& sites,
 											  const QString& sitesMode )
 {
+	const bool wasActive = m_active;
 	m_blockedApps = blockedApps;
 	m_sites = sites;
 	m_sitesMode = sitesMode.isEmpty() ? QStringLiteral("block") : sitesMode;
 	m_active = true;
 
-	vInfo() << "ExamMode: enforcement started -" << m_blockedApps.size() << "app(s),"
-			<< m_sites.size() << "site(s), mode" << m_sitesMode;
-
-	applyHostsBlocking( m_sites );
+	// Le portail ré-applique le profil chaque minute (couverture des postes
+	// connectés après coup) : on ne réécrit le fichier hosts QUE si la liste des
+	// sites ou le mode a changé, pour éviter une réécriture/flush DNS inutile.
+	const auto signature = hostsSignature( m_sites, m_sitesMode );
+	if( signature != m_hostsSignature )
+	{
+		vInfo() << "ExamMode: enforcement -" << m_blockedApps.size() << "app(s),"
+				<< m_sites.size() << "site(s), mode" << m_sitesMode;
+		applyHostsBlocking( m_sites );
+		m_hostsSignature = signature;
+	}
+	else if( wasActive == false )
+	{
+		vInfo() << "ExamMode: enforcement (re)started -" << m_blockedApps.size() << "app(s)";
+	}
 
 	if( m_timer == nullptr )
 	{
 		m_timer = new QTimer( this );
 		connect( m_timer, &QTimer::timeout, this, &ExamModeFeaturePlugin::enforceTick );
 	}
-	m_timer->start( EnforceIntervalMs );
-	enforceTick();		// première passe immédiate
+	if( m_timer->isActive() == false )
+	{
+		m_timer->start( EnforceIntervalMs );
+	}
+	enforceTick();		// passe immédiate sur les processus interdits
 }
 
 
@@ -174,6 +197,7 @@ void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, co
 void ExamModeFeaturePlugin::stopEnforcement()
 {
 	m_active = false;
+	m_hostsSignature.clear();
 	if( m_timer )
 	{
 		m_timer->stop();
@@ -215,8 +239,19 @@ void ExamModeFeaturePlugin::killApplication( const QString& executable ) const
 	}
 	QProcess::startDetached( QStringLiteral("taskkill"), { QStringLiteral("/F"), QStringLiteral("/IM"), image } );
 #else
-	// -f : correspond sur la ligne de commande complète (Linux VDI)
-	QProcess::startDetached( QStringLiteral("pkill"), { QStringLiteral("-f"), name } );
+	// Nom d'exécutable (on tolère un chemin ou un suffixe .exe hérité d'un profil
+	// Windows) : on cible le NOM de processus exact (-x) pour ne pas tuer par
+	// erreur un processus dont la ligne de commande contiendrait ce mot (-f).
+	auto proc = name.section( QLatin1Char('/'), -1 ).section( QLatin1Char('\\'), -1 );
+	if( proc.endsWith( QStringLiteral(".exe"), Qt::CaseInsensitive ) )
+	{
+		proc.chop( 4 );
+	}
+	if( proc.isEmpty() )
+	{
+		return;
+	}
+	QProcess::startDetached( QStringLiteral("pkill"), { QStringLiteral("-x"), QStringLiteral("--"), proc } );
 #endif
 }
 
@@ -233,23 +268,47 @@ QString ExamModeFeaturePlugin::hostsFilePath()
 
 
 
+QString ExamModeFeaturePlugin::hostsSignature( const QStringList& sites, const QString& mode )
+{
+	return mode + QLatin1Char('\n') + sites.join( QLatin1Char('\n') );
+}
+
+
+
 void ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
 {
 	// Le fichier hosts ne permet qu'une liste NOIRE (rediriger un domaine vers
 	// 127.0.0.1). Le mode "allow" (liste blanche) nécessiterait un proxy/pare-feu :
-	// non couvert ici, on avertit et on n'altère pas le système.
+	// non couvert ici, on avertit et on retire toute règle existante.
 	if( m_sitesMode != QStringLiteral("block") )
 	{
 		vWarning() << "ExamMode: sites_mode" << m_sitesMode
 				   << "non supporté via hosts (liste blanche) — sites non filtrés";
-		return;
-	}
-	if( sites.isEmpty() )
-	{
+		removeHostsSection();
+		flushDnsCache();
 		return;
 	}
 
-	revertHostsBlocking();		// repart d'un fichier propre
+	removeHostsSection();		// repart d'un fichier propre (idempotent)
+
+	// Aucun site à bloquer : on s'est déjà assuré qu'il ne reste pas de section.
+	const auto cleaned = [&sites] {
+		QStringList out;
+		for( const auto& s : sites )
+		{
+			const auto h = s.trimmed();
+			if( h.isEmpty() == false )
+			{
+				out.append( h );
+			}
+		}
+		return out;
+	}();
+	if( cleaned.isEmpty() )
+	{
+		flushDnsCache();
+		return;
+	}
 
 	QFile file( hostsFilePath() );
 	if( file.open( QIODevice::ReadWrite | QIODevice::Text ) == false )
@@ -265,14 +324,10 @@ void ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
 	}
 
 	content.append( QByteArrayLiteral("\n") ).append( HostsMarkerBegin ).append( '\n' );
-	for( const auto& site : sites )
+	for( const auto& host : cleaned )
 	{
-		const auto host = site.trimmed();
-		if( host.isEmpty() )
-		{
-			continue;
-		}
-		const auto line = QStringLiteral("127.0.0.1\t%1\n::1\t%1\n").arg( host );
+		// Redirige le domaine ET son sous-domaine www vers l'adresse de rebouclage.
+		const auto line = QStringLiteral("127.0.0.1\t%1\n127.0.0.1\twww.%1\n::1\t%1\n::1\twww.%1\n").arg( host );
 		content.append( line.toUtf8() );
 	}
 	content.append( HostsMarkerEnd ).append( '\n' );
@@ -281,6 +336,7 @@ void ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
 	file.write( content );
 	file.close();
 	m_hostsModified = true;
+	flushDnsCache();		// effet immédiat malgré les caches DNS/navigateur
 }
 
 
@@ -291,14 +347,30 @@ void ExamModeFeaturePlugin::revertHostsBlocking()
 	{
 		return;
 	}
+	removeHostsSection();
+	flushDnsCache();
+	m_hostsModified = false;
+}
 
+
+
+/** Retire notre section délimitée du fichier hosts. Sûr même sans section présente. */
+void ExamModeFeaturePlugin::removeHostsSection()
+{
 	QFile file( hostsFilePath() );
 	if( file.open( QIODevice::ReadWrite | QIODevice::Text ) == false )
 	{
 		return;
 	}
 
-	const auto lines = QString::fromUtf8( file.readAll() ).split( QLatin1Char('\n') );
+	const auto raw = QString::fromUtf8( file.readAll() );
+	if( raw.contains( QLatin1String(HostsMarkerBegin) ) == false )
+	{
+		file.close();
+		return;		// rien à faire
+	}
+
+	const auto lines = raw.split( QLatin1Char('\n') );
 	QString rebuilt;
 	bool inSection = false;
 	for( const auto& line : lines )
@@ -318,7 +390,6 @@ void ExamModeFeaturePlugin::revertHostsBlocking()
 			rebuilt += line + QLatin1Char('\n');
 		}
 	}
-	// retire les sauts de ligne surnuméraires laissés en fin de fichier
 	while( rebuilt.endsWith( QLatin1String("\n\n") ) )
 	{
 		rebuilt.chop( 1 );
@@ -327,5 +398,17 @@ void ExamModeFeaturePlugin::revertHostsBlocking()
 	file.resize( 0 );
 	file.write( rebuilt.toUtf8() );
 	file.close();
-	m_hostsModified = false;
+}
+
+
+
+/** Purge le cache DNS pour que le blocage prenne effet sans attendre l'expiration. */
+void ExamModeFeaturePlugin::flushDnsCache() const
+{
+#if defined(Q_OS_WIN)
+	QProcess::startDetached( QStringLiteral("ipconfig"), { QStringLiteral("/flushdns") } );
+#else
+	// systemd-resolved (la plupart des VDI Linux récents) ; échec silencieux sinon.
+	QProcess::startDetached( QStringLiteral("resolvectl"), { QStringLiteral("flush-caches") } );
+#endif
 }

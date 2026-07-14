@@ -55,7 +55,10 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 	// terminé par un crash/redémarrage, le fichier hosts peut être resté modifié
 	// (postes injoignables). On nettoie toute section résiduelle : un examen
 	// encore actif sera ré-appliqué par le portail (re-push chaque minute).
-	if( VeyonCore::component() == VeyonCore::Component::Service )
+	// Nettoyage de sûreté au démarrage des composants du POSTE (Service au boot,
+	// Server à l'ouverture de session) — jamais sur le Master (poste enseignant).
+	if( VeyonCore::component() == VeyonCore::Component::Service ||
+		VeyonCore::component() == VeyonCore::Component::Server )
 	{
 		removeHostsSection();
 		cleanupStaleLaunchPrevention();
@@ -128,13 +131,9 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 		return false;
 	}
 
-	// l'application des restrictions (processus, hosts) n'a de sens que dans le
-	// service (composant SYSTEM/root) — pas dans le master.
-	if( VeyonCore::component() != VeyonCore::Component::Service )
-	{
-		return true;
-	}
-
+	// handleFeatureMessage(server) s'exécute dans le composant Server du poste,
+	// suffisamment privilégié pour agir sur le système (ScreenLock y désactive
+	// déjà les périphériques d'entrée) : on y applique donc hosts/registre/kill.
 	switch( message.command<FeatureCommand>() )
 	{
 	case FeatureCommand::StartExam:

@@ -66,4 +66,22 @@ RUN git clone --depth 1 https://invent.kde.org/libraries/qca.git /tmp/qca \
  && ninja -C /tmp/qca/build install \
  && rm -rf /tmp/qca
 
+# SDK Interception (bibliothèque user-mode) : requis par le plugin windows-platform
+# (-linterception + include interception.h) et par le packaging (interception.dll).
+# MXE ne le fournit pas. On pose le header et la DLL dans le sysroot, et on génère
+# une import lib mingw (libinterception.a) depuis la DLL (gendef + dlltool), la .lib
+# du SDK étant au format MSVC. Le driver lui-même est déjà dans 3rdparty/interception.
+RUN apt-get update && apt-get install -y --no-install-recommends mingw-w64-tools \
+ && rm -rf /var/lib/apt/lists/* \
+ && PREFIX=/opt/mxe/usr/${MXE_TARGET} \
+ && wget -qO /tmp/interception.zip \
+        https://github.com/oblitum/Interception/releases/download/v1.0.1/Interception.zip \
+ && unzip -q /tmp/interception.zip -d /tmp/ic \
+ && cp "/tmp/ic/Interception/library/interception.h" "$PREFIX/include/" \
+ && cp "/tmp/ic/Interception/library/x64/interception.dll" "$PREFIX/bin/" \
+ && cd /tmp && gendef "$PREFIX/bin/interception.dll" \
+ && /opt/mxe/usr/bin/${MXE_TARGET}-dlltool -d interception.def -D interception.dll \
+        -l "$PREFIX/lib/libinterception.a" \
+ && rm -rf /tmp/interception.zip /tmp/ic /tmp/interception.def
+
 WORKDIR /

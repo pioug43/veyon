@@ -247,7 +247,8 @@ QString WindowsCoreFunctions::activeDesktopName()
 	auto desktopHandle = GetThreadDesktop( GetCurrentThreadId() );
 
 	std::array<wchar_t, MAX_PATH> inputDesktopName{};
-	if( GetUserObjectInformation( desktopHandle, UOI_NAME, inputDesktopName.data(), inputDesktopName.size(), nullptr ) )
+	if( GetUserObjectInformation( desktopHandle, UOI_NAME, inputDesktopName.data(),
+			static_cast<DWORD>( inputDesktopName.size() * sizeof( wchar_t ) ), nullptr ) )		// nLength en OCTETS
 	{
 		desktopName = QString( QStringLiteral( "winsta0\\%1" ) ).arg( QString::fromWCharArray( inputDesktopName.data() ) );
 	}
@@ -572,7 +573,9 @@ bool WindowsCoreFunctions::stringToSecurityIdentifier(const QString& sidString, 
 {
 	memset(sidBuffer.data(), 0, sidBuffer.size());
 
-	SmartSID sid;
+	// ConvertStringSidToSid alloue via LocalAlloc → doit être libéré par LocalFree :
+	// SmartStringSID (déleter LocalFree), pas SmartSID (déleter FreeSid).
+	SmartStringSID sid;
 	if (ConvertStringSidToSid(toConstWCharArray(sidString), sid.put()) && sid)
 	{
 		const auto sidLength = GetLengthSid(sid.get());

@@ -281,6 +281,11 @@ bool WindowsNetworkFunctions::configureFirewallException( const QString& applica
 	if( FAILED( hr ) )
 	{
 		vCritical() << "WindowsFirewallInitialize2() returned" << hr;
+		// ne pas fuiter l'initialisation COM réussie
+		if( SUCCEEDED( comInit ) )
+		{
+			CoUninitialize();
+		}
 		return false;
 	}
 

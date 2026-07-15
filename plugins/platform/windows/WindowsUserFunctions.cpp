@@ -160,9 +160,15 @@ QString WindowsUserFunctions::userGroupSecurityIdentifier(const QString& groupNa
 
 	SID_NAME_USE sidNameUse;
 
+	// cchReferencedDomainName DOIT être un pointeur valide (même si on ignore le nom
+	// de domaine) : passer 0/NULL fait échouer LookupAccountName avec
+	// ERROR_INVALID_PARAMETER → la résolution de SID de groupe échouait toujours.
+	WCHAR referencedDomain[256];
+	DWORD referencedDomainLen = static_cast<DWORD>( std::size( referencedDomain ) );
+
 	if (LookupAccountName(nullptr, WindowsCoreFunctions::toConstWCharArray(groupName),
 						  groupSid.data(), &sidLen,
-						  NULL, 0, &sidNameUse) == false)
+						  referencedDomain, &referencedDomainLen, &sidNameUse) == false)
 	{
 		vCritical() << "Could not look up SID structure:" << GetLastError();
 		return {};
@@ -317,7 +323,7 @@ QString WindowsUserFunctions::currentUserLoginName()
 	if( !domainName.isEmpty() )
 	{
 		std::array<wchar_t, MAX_COMPUTERNAME_LENGTH+1> computerName{}; // Flawfinder: ignore
-		DWORD size = MAX_COMPUTERNAME_LENGTH;
+		DWORD size = MAX_COMPUTERNAME_LENGTH + 1;		// doit inclure le \0 final
 		GetComputerName( computerName.data(), &size );
 
 		if( domainName == QString::fromWCharArray( computerName.data() ) )

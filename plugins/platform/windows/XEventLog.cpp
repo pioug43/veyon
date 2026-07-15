@@ -277,7 +277,9 @@ BOOL CXEventLog::RegisterSource(LPCTSTR lpszApp,
 	TCHAR szKey[MAX_PATH*2]; // Flawfinder: ignore
 	memset(szKey, 0, MAX_PATH*2*sizeof(TCHAR));
 	wcsncpy(szKey, szRegPath, MAX_PATH*2-2); // Flawfinder: ignore
-	wcsncat(szKey, lpszApp, MAX_PATH*2-2); // Flawfinder: ignore
+	// le 3e argument est le nb max de caractères à AJOUTER : passer la taille totale
+	// du tampon (au lieu de l'espace restant) déborde szKey si lpszApp est long.
+	wcsncat(szKey, lpszApp, (MAX_PATH*2) - wcslen(szKey) - 1); // Flawfinder: ignore
 
 	// open the registry event source key
 	DWORD dwResult = 0;
@@ -385,6 +387,8 @@ PSID CXEventLog::GetUserSid()
 	// retrieve the user information from the token
 	if (!GetTokenInformation(hToken, TokenUser, ptiUser, cbti, &cbti))
 	{
+		HeapFree(GetProcessHeap(), 0, ptiUser);
+		CloseHandle(hToken);
 		return nullptr;
 	}
 
@@ -394,12 +398,17 @@ PSID CXEventLog::GetUserSid()
 	auto psid = reinterpret_cast<PSID>( HeapAlloc(GetProcessHeap(), 0, dwLen) );
 	if (!psid)
 	{
+		HeapFree(GetProcessHeap(), 0, ptiUser);
+		CloseHandle(hToken);
 		return nullptr;
 	}
 
 	BOOL bRet = ::CopySid(dwLen, psid, ptiUser->User.Sid);
 	if (!bRet)
 	{
+		HeapFree(GetProcessHeap(), 0, psid);
+		HeapFree(GetProcessHeap(), 0, ptiUser);
+		CloseHandle(hToken);
 		return nullptr;
 	}
 

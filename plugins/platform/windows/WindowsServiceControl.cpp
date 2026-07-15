@@ -130,7 +130,7 @@ bool WindowsServiceControl::stop()
 		return false;
 	}
 
-	SERVICE_STATUS status;
+	SERVICE_STATUS status{};		// zéro-init : sinon lu non initialisé si QueryServiceStatus échoue
 	if( QueryServiceStatus( m_serviceHandle, &status ) &&
 		status.dwCurrentState == SERVICE_STOPPED )
 	{
@@ -192,6 +192,14 @@ bool WindowsServiceControl::install( const QString& filePath, const QString& dis
 	const auto binaryPath = QStringLiteral("\"%1\"").arg( QString( filePath ).replace( QLatin1Char('"'), QString() ) );
 
 	const wchar_t* dependencies = L"Tcpip\0RpcSs\0LSM\0\0";
+
+	// fermer le handle ouvert par le constructeur avant d'en obtenir un nouveau :
+	// sinon, si CreateService échoue (service déjà présent → NULL), il fuit.
+	if( m_serviceHandle )
+	{
+		CloseServiceHandle( m_serviceHandle );
+		m_serviceHandle = nullptr;
+	}
 
 	m_serviceHandle = CreateService(
 				m_serviceManager,		// SCManager database

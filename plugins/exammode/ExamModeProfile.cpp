@@ -4,8 +4,10 @@
  * Copyright (c) 2026 Pierrick Belledent
  */
 
+#include <QAbstractSocket>
 #include <QCryptographicHash>
 #include <QHash>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -52,6 +54,163 @@ ExamModeProfile::SiteMode ExamModeProfile::siteModeFromString( const QString& va
 }
 
 
+ExamModeProfile::NetworkBackend ExamModeProfile::networkBackendFromString( const QString& value, bool* valid )
+{
+	const auto normalized = value.trimmed().toLower();
+	const bool isValid = normalized.isEmpty() || normalized == QStringLiteral("hosts") ||
+						 normalized == QStringLiteral("firewall");
+	if( valid )
+	{
+		*valid = isValid;
+	}
+	return normalized == QStringLiteral("firewall") ? NetworkBackend::Firewall : NetworkBackend::Hosts;
+}
+
+
+QStringList ExamModeProfile::strictModeApplications( const QString& platform )
+{
+	const auto p = platform.trimmed().toLower();
+	if( p == QStringLiteral("windows") )
+	{
+		return {
+			// shells / interpréteurs
+			QStringLiteral("cmd.exe"), QStringLiteral("powershell.exe"), QStringLiteral("powershell_ise.exe"),
+			QStringLiteral("pwsh.exe"), QStringLiteral("wscript.exe"), QStringLiteral("cscript.exe"),
+			QStringLiteral("mshta.exe"), QStringLiteral("python.exe"), QStringLiteral("pythonw.exe"),
+			QStringLiteral("node.exe"), QStringLiteral("perl.exe"), QStringLiteral("ruby.exe"),
+			QStringLiteral("wsl.exe"), QStringLiteral("wslhost.exe"), QStringLiteral("bash.exe"),
+			// exécution / contournement de politiques
+			QStringLiteral("rundll32.exe"), QStringLiteral("regsvr32.exe"), QStringLiteral("installutil.exe"),
+			QStringLiteral("msbuild.exe"), QStringLiteral("conhost.exe"), QStringLiteral("openconsole.exe"),
+			QStringLiteral("wt.exe"),
+			// arrêt d'ExamMode / édition de l'état
+			QStringLiteral("taskmgr.exe"), QStringLiteral("procexp.exe"), QStringLiteral("procexp64.exe"),
+			QStringLiteral("regedit.exe"), QStringLiteral("reg.exe"), QStringLiteral("sc.exe"),
+			QStringLiteral("mmc.exe"), QStringLiteral("services.exe"), QStringLiteral("taskkill.exe"),
+		};
+	}
+	if( p == QStringLiteral("macos") )
+	{
+		return {
+			QStringLiteral("Terminal"), QStringLiteral("iTerm2"), QStringLiteral("iTerm"),
+			QStringLiteral("bash"), QStringLiteral("zsh"), QStringLiteral("sh"), QStringLiteral("fish"),
+			QStringLiteral("python3"), QStringLiteral("python"), QStringLiteral("node"),
+			QStringLiteral("perl"), QStringLiteral("ruby"), QStringLiteral("osascript"),
+			QStringLiteral("Activity Monitor"),
+		};
+	}
+	// linux (défaut)
+	return {
+		// shells
+		QStringLiteral("bash"), QStringLiteral("sh"), QStringLiteral("zsh"), QStringLiteral("dash"),
+		QStringLiteral("fish"), QStringLiteral("ksh"), QStringLiteral("tcsh"),
+		// interpréteurs
+		QStringLiteral("python3"), QStringLiteral("python"), QStringLiteral("node"), QStringLiteral("perl"),
+		QStringLiteral("ruby"), QStringLiteral("lua"), QStringLiteral("php"),
+		// émulateurs de terminal
+		QStringLiteral("xterm"), QStringLiteral("gnome-terminal"), QStringLiteral("gnome-terminal-"),
+		QStringLiteral("konsole"), QStringLiteral("xfce4-terminal"), QStringLiteral("x-terminal-emul"),
+		QStringLiteral("terminator"), QStringLiteral("tilix"), QStringLiteral("kitty"), QStringLiteral("alacritty"),
+		// surveillance / arrêt de processus
+		QStringLiteral("gnome-system-mon"), QStringLiteral("ksysguard"), QStringLiteral("xkill"),
+	};
+}
+
+
+QStringList ExamModeProfile::normalizeNetworks( const QStringList& networks, QStringList* rejected )
+{
+	// dédup + ordre déterministe via QMap (clé = forme canonique).
+	QMap<QString, QString> normalized;
+	int seen = 0;
+	for( const auto& original : networks )
+	{
+		if( ++seen > MaxNetworks )
+		{
+			if( rejected ) { rejected->append( QStringLiteral("<network cap exceeded>") ); }
+			break;
+		}
+		auto candidate = original.trimmed();
+		candidate.remove( QLatin1Char('\r') );
+		candidate.remove( QLatin1Char('\n') );
+		if( candidate.isEmpty() )
+		{
+			continue;
+		}
+		// une IP nue est acceptée comme /32 (IPv4) ou /128 (IPv6).
+		if( candidate.contains( QLatin1Char('/') ) == false )
+		{
+			const QHostAddress bare( candidate );
+			if( bare.isNull() == false )
+			{
+				candidate += bare.protocol() == QAbstractSocket::IPv6Protocol ?
+					QStringLiteral("/128") : QStringLiteral("/32");
+			}
+		}
+		const auto subnet = QHostAddress::parseSubnet( candidate );
+		if( subnet.first.isNull() || subnet.second < 0 )
+		{
+			if( rejected ) { rejected->append( original ); }
+			continue;
+		}
+		// forme canonique : adistanceréseau/préfixe (évite les doublons 10.0.0.5/24 vs 10.0.0.0/24).
+		const auto canonical = QStringLiteral("%1/%2").arg( subnet.first.toString() ).arg( subnet.second );
+		normalized.insert( canonical, canonical );
+	}
+	return normalized.values();
+}
+
+
+QByteArray ExamModeProfile::buildNftablesRuleset( const QStringList& allowedNetworks,
+												  const QStringList& dnsServers,
+												  const QStringList& supervisionNetworks )
+{
+	// Politique egress « drop » : seule sort la loopback, les connexions déjà
+	// établies, le DNS vers les résolveurs autorisés et les réseaux autorisés.
+	// Bloque donc IP directe hors liste, DoH vers résolveur arbitraire, VPN vers
+	// endpoint arbitraire, DNS alternatif — contournements impossibles au niveau
+	// navigateur. Table dédiée pour un flush sûr et idempotent.
+	QStringList allowLines;
+	const auto emitCidr = [&allowLines]( const QString& cidr ) {
+		const auto parts = cidr.split( QLatin1Char('/') );
+		if( parts.size() != 2 ) { return; }
+		const QHostAddress addr( parts.first() );
+		const auto family = addr.protocol() == QAbstractSocket::IPv6Protocol ?
+			QStringLiteral("ip6 daddr") : QStringLiteral("ip daddr");
+		allowLines.append( QStringLiteral("    %1 %2 accept").arg( family, cidr ) );
+	};
+	for( const auto& cidr : ExamModeProfile::normalizeNetworks( allowedNetworks ) ) { emitCidr( cidr ); }
+	for( const auto& cidr : ExamModeProfile::normalizeNetworks( supervisionNetworks ) ) { emitCidr( cidr ); }
+
+	QStringList dnsLines;
+	for( const auto& server : ExamModeProfile::normalizeNetworks( dnsServers ) )
+	{
+		const auto parts = server.split( QLatin1Char('/') );
+		if( parts.size() != 2 ) { continue; }
+		const QHostAddress addr( parts.first() );
+		const auto family = addr.protocol() == QAbstractSocket::IPv6Protocol ?
+			QStringLiteral("ip6 daddr") : QStringLiteral("ip daddr");
+		dnsLines.append( QStringLiteral("    %1 %2 udp dport 53 accept").arg( family, parts.first() ) );
+		dnsLines.append( QStringLiteral("    %1 %2 tcp dport 53 accept").arg( family, parts.first() ) );
+	}
+
+	return QStringLiteral(
+		"#!/usr/sbin/nft -f\n"
+		"table inet veyon_exammode\n"
+		"delete table inet veyon_exammode\n"
+		"table inet veyon_exammode {\n"
+		"  chain output {\n"
+		"    type filter hook output priority 0; policy drop;\n"
+		"    oif \"lo\" accept\n"
+		"    ct state established,related accept\n"
+		"%1\n"
+		"%2\n"
+		"  }\n"
+		"}\n" )
+		.arg( dnsLines.join( QLatin1Char('\n') ), allowLines.join( QLatin1Char('\n') ) )
+		.toUtf8();
+}
+
+
 QStringList ExamModeProfile::normalizeApplications( const QStringList& applications )
 {
 	// déduplication insensible à la casse et ordre déterministe (clés QMap
@@ -74,8 +233,14 @@ QStringList ExamModeProfile::normalizeApplications( const QStringList& applicati
 QStringList ExamModeProfile::normalizeDomains( const QStringList& domains, QStringList* rejected )
 {
 	QSet<QString> normalized;
+	int seen = 0;
 	for( const auto& original : domains )
 	{
+		if( ++seen > MaxDomains )
+		{
+			if( rejected ) { rejected->append( QStringLiteral("<domain cap exceeded>") ); }
+			break;
+		}
 		auto candidate = original.trimmed().toLower();
 		while( candidate.startsWith( QStringLiteral("*.") ) || candidate.startsWith( QLatin1Char('.') ) )
 		{
@@ -146,7 +311,17 @@ ExamModeProfile::ProcessPolicy ExamModeProfile::resolveProcessRules( const QVari
 	QSet<QString> allowed;
 	const auto normalizedPlatform = platform.trimmed().toLower();
 
-	for( const auto& value : rules )
+	auto capped = rules;
+	if( capped.size() > MaxProcessRules )
+	{
+		if( rejected )
+		{
+			rejected->append( QStringLiteral("<%1 process rule(s) over cap>").arg( capped.size() - MaxProcessRules ) );
+		}
+		capped = capped.mid( 0, MaxProcessRules );
+	}
+
+	for( const auto& value : capped )
 	{
 		const auto rule = value.toMap();
 		if( rule.isEmpty() || rule.value( QStringLiteral("active"), true ).toBool() == false )
@@ -201,7 +376,16 @@ ExamModeProfile::ProcessPolicy ExamModeProfile::resolveProcessRules( const QVari
 QList<ExamModeProfile::UrlRule> ExamModeProfile::normalizeUrlRules( const QVariantList& rules, QStringList* rejected )
 {
 	QList<UrlRule> normalized;
-	for( const auto& value : rules )
+	auto capped = rules;
+	if( capped.size() > MaxUrlRules )
+	{
+		if( rejected )
+		{
+			rejected->append( QStringLiteral("<%1 URL rule(s) over cap>").arg( capped.size() - MaxUrlRules ) );
+		}
+		capped = capped.mid( 0, MaxUrlRules );
+	}
+	for( const auto& value : capped )
 	{
 		const auto rule = value.toMap();
 		if( rule.isEmpty() || rule.value( QStringLiteral("active"), true ).toBool() == false )

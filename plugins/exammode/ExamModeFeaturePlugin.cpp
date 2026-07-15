@@ -31,6 +31,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QTimer>
 
 #include "ExamModeFeaturePlugin.h"
@@ -39,8 +40,10 @@
 #include "VeyonCore.h"
 #include "VeyonServerInterface.h"
 
-// intervalle de rappel de l'application des restrictions (fin des processus interdits)
-static constexpr int EnforceIntervalMs = 4000;
+// intervalle de rappel de l'application des restrictions (fin des processus
+// interdits). Court pour réduire la fenêtre pendant laquelle une application
+// interdite peut être lancée et utilisée entre deux passes.
+static constexpr int EnforceIntervalMs = 1500;
 // fail-safe : le portail ré-applique le profil chaque minute ; sans re-push
 // pendant ce délai, on lève automatiquement toutes les restrictions.
 static constexpr int DefaultLeaseSeconds = 5 * 60;
@@ -116,6 +119,16 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 			removeWindowsSiteFiltering();
 		}
 #endif
+#if defined(Q_OS_LINUX)
+		// firewall egress résiduel (crash pendant un examen) : on retire la table
+		// et on désarme le dead-man. Un examen encore actif sera ré-appliqué par
+		// le portail au prochain re-push.
+		if( QFile::exists( firewallStateFile() ) )
+		{
+			vInfo() << "ExamMode: retrait d'un firewall egress résiduel";
+			removeLinuxFirewall();
+		}
+#endif
 	}
 }
 
@@ -157,6 +170,11 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 		const auto profileId = arguments.value( argToString( Argument::ProfileId ), QStringLiteral("legacy") ).toString();
 		const auto profileRevision = arguments.value( argToString( Argument::ProfileRevision ) ).toLongLong();
 		const auto profileDigest = arguments.value( argToString( Argument::ProfileDigest ) ).toString();
+		const auto strict = arguments.value( argToString( Argument::Strict ) ).toBool();
+		const auto networkBackend = arguments.value( argToString( Argument::NetworkBackend ) ).toString();
+		const auto allowedNetworks = arguments.value( argToString( Argument::AllowedNetworks ) ).toStringList();
+		const auto dnsServers = arguments.value( argToString( Argument::DnsServers ) ).toStringList();
+		const auto supervisionNetworks = arguments.value( argToString( Argument::SupervisionNetworks ) ).toStringList();
 
 		sendFeatureMessage( FeatureMessage{ featureUid, FeatureCommand::StartExam }
 							.addArgument( Argument::BlockedApps, apps )
@@ -171,7 +189,12 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 							.addArgument( Argument::UrlDefaultAction, urlDefaultAction )
 							.addArgument( Argument::ProfileId, profileId )
 							.addArgument( Argument::ProfileRevision, profileRevision )
-							.addArgument( Argument::ProfileDigest, profileDigest ),
+							.addArgument( Argument::ProfileDigest, profileDigest )
+							.addArgument( Argument::Strict, strict )
+							.addArgument( Argument::NetworkBackend, networkBackend )
+							.addArgument( Argument::AllowedNetworks, allowedNetworks )
+							.addArgument( Argument::DnsServers, dnsServers )
+							.addArgument( Argument::SupervisionNetworks, supervisionNetworks ),
 							computerControlInterfaces );
 		return true;
 	}
@@ -218,6 +241,14 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 		platform = QStringLiteral("linux");
 		applications.append( message.argument( Argument::BlockedAppsLinux ).toStringList() );
 #endif
+		// Mode strict (opt-in) : ajoute shells/interpréteurs/outils système de la
+		// plateforme au blocage (terminate + prevent-launch), défense en profondeur
+		// contre l'exécution de code arbitraire et l'arrêt d'ExamMode.
+		if( message.argument( Argument::Strict ).toBool() )
+		{
+			applications.append( ExamModeProfile::strictModeApplications( platform ) );
+			vInfo() << "ExamMode: mode strict actif — interpréteurs/outils système bloqués";
+		}
 		QVariantList processRules;
 		for( const auto& application : applications )
 		{
@@ -228,6 +259,23 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 			} );
 		}
 		processRules.append( message.argument( Argument::ProcessRules ).toList() );
+
+		// Backend réseau : « hosts » (défaut) ou « firewall » (Linux, nftables).
+		// Renseigné en membres avant startEnforcement (utilisé par applySiteFiltering).
+		bool validBackend = false;
+		m_networkBackend = ExamModeProfile::networkBackendFromString(
+			message.argument( Argument::NetworkBackend ).toString(), &validBackend );
+		if( validBackend == false )
+		{
+			vWarning() << "ExamMode: backend réseau invalide — utilisation de hosts";
+			m_networkBackend = ExamModeProfile::NetworkBackend::Hosts;
+		}
+		m_allowedNetworks = ExamModeProfile::normalizeNetworks(
+			message.argument( Argument::AllowedNetworks ).toStringList() );
+		m_dnsServers = ExamModeProfile::normalizeNetworks(
+			message.argument( Argument::DnsServers ).toStringList() );
+		m_supervisionNetworks = ExamModeProfile::normalizeNetworks(
+			message.argument( Argument::SupervisionNetworks ).toStringList() );
 		QStringList rejectedProcesses;
 		const auto processPolicy = ExamModeProfile::resolveProcessRules( processRules, platform, &rejectedProcesses );
 		QStringList rejectedUrls;
@@ -373,6 +421,7 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	// action par défaut, mode), pour éviter réécriture hosts/flush DNS et
 	// aller-retour registre inutiles quand seules les applis changent.
 	QStringList signatureParts{ m_sitesMode,
+		m_networkBackend == ExamModeProfile::NetworkBackend::Firewall ? QStringLiteral("firewall") : QStringLiteral("hosts"),
 		m_defaultUrlAction == ExamModeProfile::RuleAction::Allow ? QStringLiteral("allow") : QStringLiteral("block") };
 	for( const auto& rule : m_urlRules )
 	{
@@ -381,6 +430,9 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			rule.regularExpression ? QStringLiteral("regex") : QStringLiteral("glob"),
 			rule.expression ) );
 	}
+	signatureParts.append( QStringLiteral("nets:") + m_allowedNetworks.join( QLatin1Char(',') ) );
+	signatureParts.append( QStringLiteral("dns:") + m_dnsServers.join( QLatin1Char(',') ) );
+	signatureParts.append( QStringLiteral("sup:") + m_supervisionNetworks.join( QLatin1Char(',') ) );
 	const auto signature = signatureParts.join( QLatin1Char('\n') );
 	if( signature != m_hostsSignature )
 	{
@@ -464,6 +516,10 @@ void ExamModeFeaturePlugin::stopEnforcement()
 	m_urlRules.clear();
 	m_hasStructuredUrlRules = false;
 	m_defaultUrlAction = ExamModeProfile::RuleAction::Allow;
+	m_networkBackend = ExamModeProfile::NetworkBackend::Hosts;
+	m_allowedNetworks.clear();
+	m_dnsServers.clear();
+	m_supervisionNetworks.clear();
 	m_siteFilteringActive = false;
 	vInfo() << "ExamMode: enforcement stopped";
 }
@@ -476,10 +532,101 @@ void ExamModeFeaturePlugin::enforceTick()
 	{
 		return;
 	}
+	auditRunningBlockedProcesses();		// journalise les tentatives (processus interdit trouvé actif)
 	for( const auto& app : m_blockedApps )
 	{
 		killApplication( app );
 	}
+}
+
+
+
+/**
+ * Détecte (une seule invocation par passe, non bloquante au-delà d'1 s) les
+ * processus interdits actuellement en cours d'exécution et les journalise comme
+ * tentatives de contournement. N'agit pas — le kill est fait séparément.
+ */
+void ExamModeFeaturePlugin::auditRunningBlockedProcesses() const
+{
+	if( m_blockedApps.isEmpty() )
+	{
+		return;
+	}
+
+	QProcess process;
+#if defined(Q_OS_WIN)
+	QSet<QString> expected;
+	for( const auto& app : m_blockedApps )
+	{
+		const auto image = windowsImageName( app );
+		if( image.isEmpty() == false )
+		{
+			expected.insert( image.toLower() );
+		}
+	}
+	if( expected.isEmpty() )
+	{
+		return;
+	}
+	process.start( QStringLiteral("tasklist"), { QStringLiteral("/fo"), QStringLiteral("csv"), QStringLiteral("/nh") } );
+	if( process.waitForStarted( 1000 ) == false || process.waitForFinished( 1000 ) == false )
+	{
+		return;
+	}
+	QSet<QString> found;
+	const auto lines = QString::fromLocal8Bit( process.readAllStandardOutput() ).split( QLatin1Char('\n'), Qt::SkipEmptyParts );
+	for( const auto& line : lines )
+	{
+		auto image = line.section( QLatin1Char(','), 0, 0 );		// "image.exe"
+		image.remove( QLatin1Char('"') );
+		if( expected.contains( image.trimmed().toLower() ) )
+		{
+			found.insert( image.trimmed() );
+		}
+	}
+	if( found.isEmpty() == false )
+	{
+		vWarning() << "ExamMode: tentative de contournement — processus interdit(s) actif(s):" << QStringList( found.values() );
+	}
+#else
+	QStringList patterns;
+	for( const auto& app : m_blockedApps )
+	{
+		auto proc = app.section( QLatin1Char('/'), -1 ).section( QLatin1Char('\\'), -1 );
+		if( proc.endsWith( QStringLiteral(".exe"), Qt::CaseInsensitive ) )
+		{
+			proc.chop( 4 );
+		}
+		if( proc.isEmpty() == false )
+		{
+			patterns.append( QRegularExpression::escape( proc ) );
+		}
+	}
+	if( patterns.isEmpty() )
+	{
+		return;
+	}
+	// pgrep -x -l : correspondance exacte du nom (comm), affiche « pid nom ».
+	process.start( QStringLiteral("pgrep"), { QStringLiteral("-x"), QStringLiteral("-l"), patterns.join( QLatin1Char('|') ) } );
+	if( process.waitForStarted( 1000 ) == false || process.waitForFinished( 1000 ) == false )
+	{
+		return;
+	}
+	QSet<QString> found;
+	const auto lines = QString::fromLocal8Bit( process.readAllStandardOutput() ).split( QLatin1Char('\n'), Qt::SkipEmptyParts );
+	for( const auto& line : lines )
+	{
+		const auto name = line.section( QLatin1Char(' '), 1 ).trimmed();
+		if( name.isEmpty() == false )
+		{
+			found.insert( name );
+		}
+	}
+	if( found.isEmpty() == false )
+	{
+		vWarning() << "ExamMode: tentative de contournement — processus interdit(s) actif(s):" << QStringList( found.values() );
+	}
+#endif
 }
 
 
@@ -540,9 +687,23 @@ bool ExamModeFeaturePlugin::applySiteFiltering( const QStringList& sites, const 
 #if defined(Q_OS_WIN)
 	return applyWindowsSiteFiltering( sites, mode );
 #else
+	// Backend firewall (Linux) : allow-list egress par CIDR, robuste au
+	// contournement (IP directe, DoH, DNS alternatif, VPN). Ignore hosts/PAC.
+	if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall )
+	{
+#if defined(Q_OS_LINUX)
+		// on retire toute règle hosts résiduelle avant de basculer sur le firewall
+		removeHostsSection();
+		flushDnsCache();
+		return applyLinuxFirewall();
+#else
+		vWarning() << "ExamMode: le backend firewall n'est disponible que sous Linux; profil réseau refusé";
+		return false;
+#endif
+	}
 	if( m_hasStructuredUrlRules )
 	{
-		vWarning() << "ExamMode: les regles URL ordonnees/regex necessitent le backend PAC Windows; profil refuse";
+		vWarning() << "ExamMode: les regles URL ordonnees/regex necessitent le backend PAC Windows ou firewall; profil refuse";
 		removeHostsSection();
 		flushDnsCache();
 		return false;
@@ -576,6 +737,9 @@ void ExamModeFeaturePlugin::removeSiteFiltering()
 #if defined(Q_OS_WIN)
 	removeWindowsSiteFiltering();
 #else
+#if defined(Q_OS_LINUX)
+	removeLinuxFirewall();		// idempotent : sans effet si le firewall n'est pas actif
+#endif
 	revertHostsBlocking();
 #endif
 }
@@ -734,6 +898,140 @@ bool ExamModeFeaturePlugin::isEndpointComponent()
 	return VeyonCore::component() == VeyonCore::Component::Service ||
 		   VeyonCore::component() == VeyonCore::Component::Server;
 }
+
+
+#if defined(Q_OS_LINUX)
+
+QString ExamModeFeaturePlugin::firewallStateFile()
+{
+	return QStringLiteral("/var/lib/veyon/exammode-firewall.on");
+}
+
+
+
+QString ExamModeFeaturePlugin::firewallRulesetFile()
+{
+	return QStringLiteral("/var/lib/veyon/exammode-firewall.nft");
+}
+
+
+
+/**
+ * Applique une allow-list egress via nftables (politique « drop »). Robuste aux
+ * contournements navigateur (IP directe, DoH, résolveur alternatif, VPN vers un
+ * endpoint arbitraire) puisque tout ce qui n'est pas explicitement autorisé est
+ * jeté au niveau noyau. Nécessite les privilèges root (composant Service/Server
+ * privilégié). Fail-closed : en cas d'échec d'application, aucune règle partielle
+ * n'est laissée et false est retourné (le poste n'est PAS verrouillé, ce qui est
+ * signalé bruyamment ; on préfère un poste ouvert et journalisé à un ruleset
+ * incohérent). Un dead-man systemd retire les règles à l'échéance du bail même
+ * si le processus Veyon meurt, pour ne jamais isoler durablement la VM.
+ */
+bool ExamModeFeaturePlugin::applyLinuxFirewall()
+{
+	const auto ruleset = ExamModeProfile::buildNftablesRuleset( m_allowedNetworks, m_dnsServers,
+																m_supervisionNetworks );
+
+	QDir().mkpath( QFileInfo( firewallRulesetFile() ).absolutePath() );
+	QSaveFile file( firewallRulesetFile() );
+	if( file.open( QIODevice::WriteOnly ) == false ||
+		file.setPermissions( QFileDevice::ReadOwner | QFileDevice::WriteOwner ) == false ||
+		file.write( ruleset ) != ruleset.size() || file.commit() == false )
+	{
+		vWarning() << "ExamMode: impossible d'écrire le ruleset nftables" << firewallRulesetFile();
+		return false;
+	}
+
+	QProcess nft;
+	nft.start( QStringLiteral("nft"), { QStringLiteral("-f"), firewallRulesetFile() } );
+	if( nft.waitForStarted( 3000 ) == false || nft.waitForFinished( 5000 ) == false ||
+		nft.exitStatus() != QProcess::NormalExit || nft.exitCode() != 0 )
+	{
+		vWarning() << "ExamMode: échec de l'application nftables (poste NON verrouillé):"
+				   << nft.readAllStandardError();
+		removeLinuxFirewall();		// ne laisse pas de table partielle
+		return false;
+	}
+
+	// marqueur pour le nettoyage au démarrage après crash
+	QFile marker( firewallStateFile() );
+	if( marker.open( QIODevice::WriteOnly | QIODevice::Text ) )
+	{
+		marker.write( "1" );
+		marker.close();
+	}
+
+	// dead-man : retire la table à l'échéance du bail (+marge) même si Veyon meurt.
+	armFirewallDeadMan( m_leaseSeconds + 60 );
+
+	vInfo() << "ExamMode: firewall egress actif —" << m_allowedNetworks.size() << "réseau(x) autorisé(s),"
+			<< m_dnsServers.size() << "résolveur(s) DNS";
+	return true;
+}
+
+
+
+/** Retire la table nftables et désarme le dead-man. Idempotent. */
+void ExamModeFeaturePlugin::removeLinuxFirewall()
+{
+	disarmFirewallDeadMan();
+
+	QProcess nft;
+	// delete d'une table absente échoue : on tolère silencieusement via sh.
+	nft.start( QStringLiteral("sh"), { QStringLiteral("-c"),
+		QStringLiteral("nft delete table inet veyon_exammode 2>/dev/null || true") } );
+	nft.waitForStarted( 3000 );
+	nft.waitForFinished( 5000 );
+
+	QFile::remove( firewallStateFile() );
+	QFile::remove( firewallRulesetFile() );
+}
+
+
+
+/**
+ * Arme (ou ré-arme) une minuterie transitoire systemd à nom fixe qui supprimera
+ * la table nftables dans « seconds » secondes. Chaque renouvellement du bail
+ * remplace la minuterie précédente : tant que le portail ré-applique le profil,
+ * la minuterie est repoussée ; s'il cesse (crash, arrêt, poste isolé), elle finit
+ * par se déclencher et rétablit le réseau — garde-fou de dernier recours.
+ */
+void ExamModeFeaturePlugin::armFirewallDeadMan( int seconds ) const
+{
+	QProcess stop;
+	stop.start( QStringLiteral("sh"), { QStringLiteral("-c"),
+		QStringLiteral("systemctl stop veyon-exammode-failsafe.timer 2>/dev/null; "
+					   "systemctl reset-failed veyon-exammode-failsafe.timer 2>/dev/null; true") } );
+	stop.waitForStarted( 3000 );
+	stop.waitForFinished( 5000 );
+
+	QProcess run;
+	run.start( QStringLiteral("systemd-run"), {
+		QStringLiteral("--unit=veyon-exammode-failsafe"),
+		QStringLiteral("--on-active=%1s").arg( qMax( 60, seconds ) ),
+		QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+		QStringLiteral("nft delete table inet veyon_exammode 2>/dev/null || true") } );
+	if( run.waitForStarted( 3000 ) == false || run.waitForFinished( 5000 ) == false ||
+		run.exitStatus() != QProcess::NormalExit || run.exitCode() != 0 )
+	{
+		vWarning() << "ExamMode: dead-man systemd non armé (systemd-run indisponible?):"
+				   << run.readAllStandardError();
+	}
+}
+
+
+
+void ExamModeFeaturePlugin::disarmFirewallDeadMan() const
+{
+	QProcess stop;
+	stop.start( QStringLiteral("sh"), { QStringLiteral("-c"),
+		QStringLiteral("systemctl stop veyon-exammode-failsafe.timer 2>/dev/null; "
+					   "systemctl reset-failed veyon-exammode-failsafe.timer 2>/dev/null; true") } );
+	stop.waitForStarted( 3000 );
+	stop.waitForFinished( 5000 );
+}
+
+#endif
 
 
 

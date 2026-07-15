@@ -22,9 +22,51 @@ restores its previous system state automatically when the lease expires.
 | `profileId` | string | Stable identity of the managed profile; default `legacy` |
 | `profileRevision` | non-negative integer | Monotonic revision within a profile identity |
 | `profileDigest` | SHA-256 hex string | Optional expected digest of the normalized effective profile |
+| `strict` | boolean | Opt-in: also block shells, interpreters, and system tools (see below); default `false` |
+| `networkBackend` | `hosts` or `firewall` | Linux network enforcement backend; default `hosts` |
+| `allowedNetworks` | string list | CIDR/IP allowed for egress (firewall backend) |
+| `dnsServers` | string list | DNS resolver IPs allowed through the firewall |
+| `supervisionNetworks` | string list | CIDR of the portal/master always allowed through the firewall |
 
-Application and site lists are normalized, deduplicated, and sorted before they
-are applied. Invalid site values are rejected and logged.
+Application, site, and network lists are normalized, deduplicated, and sorted
+before they are applied. Invalid values are rejected and logged. Rule counts are
+capped (512 process/URL/network rules, 4096 domains) to reject degenerate profiles.
+
+## Strict mode (opt-in)
+
+When `strict` is set, a platform-specific set of shells, script interpreters,
+terminal emulators, process-management tools, and policy-editing tools is merged
+into the block list (terminate **and** prevent-launch). This is defence in depth
+against arbitrary code execution and against a student stopping ExamMode
+(`taskmgr`, `regedit`, `sc`, terminals, `python`, `bash`, `powershell`, …). It is
+opt-in because it breaks exams that legitimately need a terminal or interpreter.
+
+## Linux firewall backend (experimental, opt-in)
+
+`networkBackend: firewall` replaces the `hosts` block list with an **nftables
+egress allow-list** (`policy drop`): only loopback, established/related
+connections, DNS to the listed `dnsServers`, and the `allowedNetworks` /
+`supervisionNetworks` CIDRs may leave the machine. Unlike the browser PAC, this
+cannot be bypassed by a direct IP connection, DoH, an alternative resolver, or a
+VPN to an arbitrary endpoint — enforcement is in the kernel and applies to every
+process, not just policy-aware browsers.
+
+It is **disabled by default and experimental**: validate it in a lab on your exact
+image before production. Safeguards:
+
+* **Fail-closed application**: if `nft` fails, no partial ruleset is left and the
+  machine stays *open* (loudly logged) rather than half-blocked.
+* **Dead-man timer**: applying the ruleset arms a fixed-name transient systemd
+  timer (`veyon-exammode-failsafe`) that deletes the nftables table at
+  `leaseSeconds + 60`. Each renewal pushes it back; if Veyon dies entirely the
+  timer still restores connectivity, so a crash never isolates the VM for good.
+* **Startup cleanup**: a residual table left by a crash is removed when the
+  service restarts.
+
+Requires root (the endpoint Service/Server component) and `nftables` +
+`systemd-run` on the image. `allowedNetworks` drive an IP allow-list, so provide
+the exam-server CIDRs (domain-only allow-listing is not possible at the firewall
+layer — that is what the Windows PAC backend is for).
 
 ## Platform capabilities
 

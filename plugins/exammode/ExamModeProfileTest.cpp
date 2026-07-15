@@ -120,6 +120,84 @@ private slots:
 			ExamModeProfile::SiteMode::Block );
 		QVERIFY( valid == false );
 	}
+
+	void validatesNetworkBackend()
+	{
+		bool valid = false;
+		QCOMPARE( ExamModeProfile::networkBackendFromString( QStringLiteral("FireWall"), &valid ),
+			ExamModeProfile::NetworkBackend::Firewall );
+		QVERIFY( valid );
+		QCOMPARE( ExamModeProfile::networkBackendFromString( QString(), &valid ),
+			ExamModeProfile::NetworkBackend::Hosts );
+		QVERIFY( valid );
+		QCOMPARE( ExamModeProfile::networkBackendFromString( QStringLiteral("bogus"), &valid ),
+			ExamModeProfile::NetworkBackend::Hosts );
+		QVERIFY( valid == false );
+	}
+
+	void strictModeCoversInterpretersPerPlatform()
+	{
+		const auto windows = ExamModeProfile::strictModeApplications( QStringLiteral("windows") );
+		QVERIFY( windows.contains( QStringLiteral("powershell.exe") ) );
+		QVERIFY( windows.contains( QStringLiteral("cmd.exe") ) );
+		QVERIFY( windows.contains( QStringLiteral("taskmgr.exe") ) );		// anti-arrêt d'ExamMode
+		const auto linuxApps = ExamModeProfile::strictModeApplications( QStringLiteral("linux") );
+		QVERIFY( linuxApps.contains( QStringLiteral("bash") ) );
+		QVERIFY( linuxApps.contains( QStringLiteral("python3") ) );
+		QVERIFY( linuxApps.contains( QStringLiteral("gnome-terminal") ) );
+		// les interpréteurs strict deviennent des règles de blocage effectives
+		QVariantList rules;
+		for( const auto& app : linuxApps )
+		{
+			rules.append( QVariantMap{ { QStringLiteral("executable"), app },
+				{ QStringLiteral("action"), QStringLiteral("block") } } );
+		}
+		const auto policy = ExamModeProfile::resolveProcessRules( rules, QStringLiteral("linux") );
+		QVERIFY( policy.preventLaunchApplications.contains( QStringLiteral("bash") ) );
+	}
+
+	void normalizesAndDeduplicatesNetworks()
+	{
+		QStringList rejected;
+		const auto networks = ExamModeProfile::normalizeNetworks(
+			{ QStringLiteral(" 10.0.0.5/24 "), QStringLiteral("10.0.0.99/24"),		// même sous-réseau => dédup
+			  QStringLiteral("192.168.1.10"), QStringLiteral("2001:db8::1/64"),
+			  QStringLiteral("not-an-ip"), QStringLiteral("10.0.0.0/40") }, &rejected );
+
+		QVERIFY( networks.contains( QStringLiteral("10.0.0.0/24") ) );
+		QVERIFY( networks.contains( QStringLiteral("192.168.1.10/32") ) );		// IP nue => /32
+		QCOMPARE( networks.count( QStringLiteral("10.0.0.0/24") ), 1 );
+		QCOMPARE( rejected.size(), 2 );		// "not-an-ip" + préfixe /40 invalide
+	}
+
+	void buildsFailClosedNftablesRuleset()
+	{
+		const auto ruleset = QString::fromUtf8( ExamModeProfile::buildNftablesRuleset(
+			{ QStringLiteral("10.0.0.0/24") }, { QStringLiteral("10.0.0.53") },
+			{ QStringLiteral("192.168.50.0/24") } ) );
+
+		QVERIFY( ruleset.contains( QStringLiteral("policy drop") ) );			// fail-closed
+		QVERIFY( ruleset.contains( QStringLiteral("oif \"lo\" accept") ) );		// loopback
+		QVERIFY( ruleset.contains( QStringLiteral("ct state established,related accept") ) );
+		QVERIFY( ruleset.contains( QStringLiteral("ip daddr 10.0.0.0/24 accept") ) );
+		QVERIFY( ruleset.contains( QStringLiteral("ip daddr 192.168.50.0/24 accept") ) );	// supervision
+		QVERIFY( ruleset.contains( QStringLiteral("udp dport 53 accept") ) );	// DNS résolveur autorisé
+		QVERIFY( ruleset.contains( QStringLiteral("delete table inet veyon_exammode") ) );	// idempotent
+	}
+
+	void enforcesRuleCountCaps()
+	{
+		QVariantList many;
+		for( int i = 0; i < ExamModeProfile::MaxUrlRules + 50; ++i )
+		{
+			many.append( QVariantMap{ { QStringLiteral("expression"), QStringLiteral("d%1.example").arg( i ) },
+				{ QStringLiteral("action"), QStringLiteral("block") } } );
+		}
+		QStringList rejected;
+		const auto rules = ExamModeProfile::normalizeUrlRules( many, &rejected );
+		QVERIFY( rules.size() <= ExamModeProfile::MaxUrlRules );
+		QVERIFY( rejected.isEmpty() == false );
+	}
 };
 
 QTEST_GUILESS_MAIN( ExamModeProfileTest )

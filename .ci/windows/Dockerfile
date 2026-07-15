@@ -39,6 +39,11 @@ RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" \
         qt6-qtbase qt6-qttools qt6-qtsvg qt6-qtwebsockets \
         openssl libjpeg-turbo libpng lzo
 
+# QCA (git master) exige Qt6::Core5Compat depuis 2024 (QRegExp/QTextCodec déplacés
+# hors de qtbase en Qt6). On construit le module qt5compat dans une couche SÉPARÉE
+# pour ne pas invalider le cache (long) de la couche qtbase ci-dessus.
+RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" qt6-qt5compat
+
 # Layout attendu par build.sh (/usr/x86_64-w64-mingw32 + qt-cmake wrapper)
 RUN ln -sfn /opt/mxe/usr/${MXE_TARGET} /usr/x86_64-w64-mingw32 \
  && printf '#!/bin/sh\nexec /opt/mxe/usr/bin/%s-cmake "$@"\n' "${MXE_TARGET}" \

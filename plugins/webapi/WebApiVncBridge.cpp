@@ -67,7 +67,12 @@ WebApiVncBridge::WebApiVncBridge( QWebSocket* socket, ComputerControlInterface::
 	// demander la forme du curseur à l'hôte (Cursor pseudo-encoding côté amont) :
 	// sinon le curseur n'est ni dans le framebuffer ni transmis, et noVNC n'affiche
 	// aucune souris. On le relaie ensuite au client noVNC (cf. onCursorShapeUpdated).
-	vncConnection->setUseRemoteCursor( true );
+	// setUseRemoteCursor modifie l'état d'une connexion vivant dans SON thread ; on
+	// le planifie là-bas (comme setLiveUpdateMode) — les signaux sont déjà reçus en
+	// QueuedConnection, un appel direct ici serait une data race.
+	QMetaObject::invokeMethod( vncConnection, [vncConnection]() {
+		vncConnection->setUseRemoteCursor( true );
+	}, Qt::QueuedConnection );
 
 	// make the upstream connection deliver a continuous, reactive stream
 	setLiveUpdateMode();
@@ -377,6 +382,20 @@ bool WebApiVncBridge::parseClientMessage()
 			return false;
 		}
 		const auto textLength = qFromBigEndian<quint32>( buffer + 4 );
+		// Plafond : sans borne, un ClientCutText hostile fait attendre (et bufferiser)
+		// jusqu'à 4 Gio (DoS mémoire) puis le cast quint32→int devient négatif (lecture
+		// hors bornes). Un presse-papier légitime est petit → on ferme au-delà.
+		constexpr quint32 MaxClientCutTextLength = 1u << 20;	// 1 MiB
+		if( textLength > MaxClientCutTextLength )
+		{
+			vWarning() << "WebApiVncBridge: ClientCutText length" << textLength << "too large - closing";
+			m_buffer.clear();
+			if( m_socket )
+			{
+				m_socket->close();
+			}
+			return false;
+		}
 		const qint64 messageSize = static_cast<qint64>( 8 ) + textLength;
 		if( m_buffer.size() < messageSize )
 		{

@@ -99,6 +99,20 @@ add_custom_target(windows-binaries
 				${QT_DLLDIR}/Qt6HttpServer.dll
 				${QT_DLLDIR}/Qt6WebSockets.dll
 			${WINDOWS_INSTALL_FILES}
+	# Dépendances transitives de Qt6 (fermeture objdump) — sans elles l'application
+	# ne démarre pas (ex. libbrotlidec, ICU, pcre2, harfbuzz, freetype…).
+	COMMAND cp ${DLLDIR}/libbrotlidec.dll ${DLLDIR}/libbrotlicommon.dll
+				${DLLDIR}/libbz2.dll
+				${DLLDIR}/libfreetype-6.dll
+				${DLLDIR}/libglib-2.0-0.dll
+				${DLLDIR}/libharfbuzz-0.dll
+				${DLLDIR}/libiconv-2.dll
+				${DLLDIR}/libintl-8.dll
+				${DLLDIR}/libpcre2-16-0.dll
+				${DLLDIR}/libpcre2-8-0.dll
+				${DLLDIR}/libzstd.dll
+			${WINDOWS_INSTALL_FILES}
+	COMMAND cp ${DLLDIR}/icudt*.dll ${DLLDIR}/icuin*.dll ${DLLDIR}/icuuc*.dll ${WINDOWS_INSTALL_FILES}
 	COMMAND mkdir -p ${WINDOWS_INSTALL_FILES}/imageformats
 	COMMAND cp ${QT_PLUGINDIR}/imageformats/qjpeg.dll ${WINDOWS_INSTALL_FILES}/imageformats
 	COMMAND mkdir -p ${WINDOWS_INSTALL_FILES}/platforms

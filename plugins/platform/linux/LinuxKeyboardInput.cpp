@@ -66,7 +66,12 @@ LinuxKeyboardInput::~LinuxKeyboardInput()
 	else
 	{
 		free( m_fakeKeyHandle );
-		XCloseDisplay( m_display );
+		// m_display peut être nul (session Wayland, ou échec d'ouverture X) :
+		// XCloseDisplay(NULL) déréférence et crashe.
+		if( m_display )
+		{
+			XCloseDisplay( m_display );
+		}
 	}
 }
 

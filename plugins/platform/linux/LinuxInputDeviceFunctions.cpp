@@ -92,8 +92,15 @@ void LinuxInputDeviceFunctions::setEmptyKeyMapTable()
 		XFree( m_origKeyTable );
 
 	auto display = XOpenDisplay( nullptr );
+	if( display == nullptr )
+	{
+		vCritical() << "cannot open X display for keymap manipulation";
+		return;
+	}
 	XDisplayKeycodes( display, &m_keyCodeMin, &m_keyCodeMax );
-	m_keyCodeCount = m_keyCodeMax - m_keyCodeMin;
+	// min/max sont INCLUSIFS : le nombre de keycodes est max-min+1 (sinon le dernier
+	// keycode reste mappé, affaiblissant le blocage clavier).
+	m_keyCodeCount = m_keyCodeMax - m_keyCodeMin + 1;
 
 	m_origKeyTable = XGetKeyboardMapping( display, ::KeyCode( m_keyCodeMin ), m_keyCodeCount, &m_keySymsPerKeyCode );
 

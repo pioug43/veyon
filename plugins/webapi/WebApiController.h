@@ -159,6 +159,12 @@ public:
 	Response getUserInformation( const Request& request );
 	Response getSessionInformation(const Request& request);
 
+	// Collecte des rapports de crash (spool local rempli par le plugin
+	// crashreport) : le portail les récupère lors de son polling.
+	Response getCrashReports( const Request& request );
+	Response getCrashReportDump( const Request& request, const QString& id );
+	Response deleteCrashReport( const Request& request, const QString& id );
+
 	QString getStatistics();
 	QString getConnectionDetails();
 	Response sleep(const Request& request, const int& seconds);

@@ -99,6 +99,14 @@
 	OP( VeyonConfiguration, VeyonCore::config(), int, logFileRotationCount, setLogFileRotationCount, "LogFileRotationCount", "Logging", Logger::DefaultFileRotationCount, Configuration::Property::Flag::Advanced )		\
 	OP( VeyonConfiguration, VeyonCore::config(), QString, logFileDirectory, setLogFileDirectory, "LogFileDirectory", "Logging", QLatin1String(Logger::DefaultLogFileDirectory), Configuration::Property::Flag::Standard )		\
 
+// Propriétés de la remontée de crash. Macro DÉDIÉE (pas fusionnée dans le bloc
+// Logging) : elle est agrégée aux propriétés du cœur pour générer les
+// accesseurs et enregistrer les valeurs par défaut, mais n'est PAS câblée à la
+// page de configuration (pas de widgets UI requis).
+#define FOREACH_VEYON_CRASHREPORT_CONFIG_PROPERTY(OP) \
+	OP( VeyonConfiguration, VeyonCore::config(), bool, crashReportingEnabled, setCrashReportingEnabled, "CrashReportingEnabled", "CrashReport", true, Configuration::Property::Flag::Standard )		\
+	OP( VeyonConfiguration, VeyonCore::config(), QString, crashReportDirectory, setCrashReportDirectory, "CrashReportDirectory", "CrashReport", QStringLiteral("%GLOBALAPPDATA%/crashes"), Configuration::Property::Flag::Standard )		\
+
 #define FOREACH_VEYON_VNC_SERVER_CONFIG_PROPERTY(OP) \
 	OP( VeyonConfiguration, VeyonCore::config(), QUuid, vncServerPlugin, setVncServerPlugin, "Plugin", "VncServer", QUuid(), Configuration::Property::Flag::Standard )	\
 
@@ -181,6 +189,7 @@
 	FOREACH_VEYON_UI_CONFIG_PROPERTY(OP)				\
 	FOREACH_VEYON_SERVICE_CONFIG_PROPERTY(OP)			\
 	FOREACH_VEYON_LOGGING_CONFIG_PROPERTY(OP)			\
+	FOREACH_VEYON_CRASHREPORT_CONFIG_PROPERTY(OP)			\
 	FOREACH_VEYON_NETWORK_OBJECT_DIRECTORY_CONFIG_PROPERTY(OP)\
 	FOREACH_VEYON_USER_GROUPS_BACKEND_CONFIG_PROPERTY(OP)	\
 	FOREACH_VEYON_FEATURES_CONFIG_PROPERTY(OP)\

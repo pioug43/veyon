@@ -353,6 +353,9 @@ bool WebApiHttpServer::start()
 	success &= addRoute<Method::Post>( QStringLiteral("feature/<arg>/control"), &WebApiController::controlFeature );
 	success &= addRoute<Method::Get>( QStringLiteral("user"), &WebApiController::getUserInformation );
 	success &= addRoute<Method::Get>(QStringLiteral("session"), &WebApiController::getSessionInformation);
+	success &= addRoute<Method::Get>( QStringLiteral("crashreport"), &WebApiController::getCrashReports );
+	success &= addRoute<Method::Get>( QStringLiteral("crashreport/<arg>"), &WebApiController::getCrashReportDump );
+	success &= addRoute<Method::Delete>( QStringLiteral("crashreport/<arg>"), &WebApiController::deleteCrashReport );
 
 	if (m_debug)
 	{

@@ -27,12 +27,16 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QSystemTrayIcon>
+#include <QTimer>
 
 #include "SystemTrayIcon.h"
 #include "FeatureWorkerManager.h"
 #include "VeyonCore.h"
 #include "VeyonConfiguration.h"
 #include "VeyonServerInterface.h"
+
+// auto-close interval for the fallback message box shown when no system tray is available
+static constexpr int MessageAutoCloseInterval = 10000;
 
 
 SystemTrayIcon::SystemTrayIcon( QObject* parent ) :
@@ -152,10 +156,16 @@ bool SystemTrayIcon::handleFeatureMessage( VeyonWorkerInterface& worker, const F
 		}
 		else
 		{
-			QMessageBox::information( nullptr,
-									  message.argument( Argument::MessageTitle ).toString(),
-									  message.argument( Argument::MessageText ).toString() );
-			QCoreApplication::instance()->quit();
+			auto messageBox = new QMessageBox( QMessageBox::Information,
+											   message.argument( Argument::MessageTitle ).toString(),
+											   message.argument( Argument::MessageText ).toString() );
+			messageBox->setAttribute( Qt::WA_DeleteOnClose );
+			messageBox->setWindowFlags( messageBox->windowFlags() | Qt::WindowStaysOnTopHint );
+			connect( messageBox, &QObject::destroyed,
+					 QCoreApplication::instance(), &QCoreApplication::quit );
+			QTimer::singleShot( MessageAutoCloseInterval, messageBox, &QWidget::close );
+			messageBox->show();
+			messageBox->raise();
 		}
 		return true;
 

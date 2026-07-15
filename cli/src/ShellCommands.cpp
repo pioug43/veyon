@@ -87,6 +87,14 @@ CommandLinePluginInterface::RunResult ShellCommands::handle_run( const QStringLi
 		return Failed;
 	}
 
+	// Sans open(), canReadLine() renvoie toujours false : le script n'était jamais
+	// exécuté alors que la commande renvoyait « Successful ».
+	if( scriptFile.open( QFile::ReadOnly | QFile::Text ) == false )
+	{
+		CommandLineIO::error( tr( "File \"%1\" does not exist!" ).arg( scriptFile.fileName() ) );
+		return Failed;
+	}
+
 	while( scriptFile.canReadLine() )
 	{
 		runCommand( QString::fromUtf8( scriptFile.readLine() ) );

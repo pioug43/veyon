@@ -138,6 +138,21 @@ int main( int argc, char **argv )
 				runResult = CommandLinePluginInterface::NotEnoughArguments;
 			}
 
+			// Capturer avant « delete core » : les plugins (it.key()) lui appartiennent,
+			// le cas Unknown les lisait APRÈS libération (use-after-free, p.ex. « veyon-cli
+			// <module> help »).
+			QStringList availableCommands;
+			if( runResult == CommandLinePluginInterface::Unknown )
+			{
+				auto commands = it.key()->commands();
+				std::sort( commands.begin(), commands.end() );
+				for( const auto& command : commands )
+				{
+					availableCommands.append(
+						QStringLiteral("    %1 - %2").arg( command, it.key()->commandHelp( command ) ) );
+				}
+			}
+
 			delete core;
 			delete app;
 
@@ -166,13 +181,10 @@ int main( int argc, char **argv )
 				return -1;
 			case CommandLinePluginInterface::Unknown:
 			{
-				auto commands = it.key()->commands();
-				std::sort( commands.begin(), commands.end() );
-
 				CommandLineIO::print( VeyonCore::tr( "Available commands:" ) );
-				for( const auto& command : commands )
+				for( const auto& line : availableCommands )
 				{
-					CommandLineIO::print( QStringLiteral("    %1 - %2").arg( command, it.key()->commandHelp( command ) ) );
+					CommandLineIO::print( line );
 				}
 				return -1;
 			}

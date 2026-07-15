@@ -187,9 +187,14 @@ void AccessControlPage::addAccessControlRule()
 
 void AccessControlPage::removeAccessControlRule()
 {
-	QJsonArray accessControlRules = VeyonCore::config().accessControlRules();
+	const auto row = ui->accessControlRulesView->currentIndex().row();
+	if( row < 0 )
+	{
+		return;		// aucune règle sélectionnée : removeAt(-1) serait hors bornes
+	}
 
-	accessControlRules.removeAt( ui->accessControlRulesView->currentIndex().row() );
+	QJsonArray accessControlRules = VeyonCore::config().accessControlRules();
+	accessControlRules.removeAt( row );
 
 	VeyonCore::config().setAccessControlRules( accessControlRules );
 

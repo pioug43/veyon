@@ -28,6 +28,7 @@
 #include "FlexibleListView.h"
 #include "ComputerZoomWidget.h"
 
+#include <QPointer>
 #include <QWidget>
 
 class FlexibleListView;
@@ -93,7 +94,10 @@ private:
 	static constexpr auto IgnoredNumberOfMouseEventsWhileHold = 3;
 	static constexpr auto ItemsLayoutDebounceTimeout = 250;
 
-	ComputerZoomWidget* m_computerZoomWidget{nullptr};
+	// QPointer : le widget a l'attribut WA_DeleteOnClose et peut donc s'auto-détruire
+	// (fermeture par l'utilisateur) ; QPointer se remet à nullptr et évite un
+	// double-free / use-after-free lors du delete suivant.
+	QPointer<ComputerZoomWidget> m_computerZoomWidget;
 
 	QTimer* m_itemsLayoutDebounceTimer;
 

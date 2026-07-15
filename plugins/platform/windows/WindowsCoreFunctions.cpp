@@ -573,9 +573,10 @@ bool WindowsCoreFunctions::stringToSecurityIdentifier(const QString& sidString, 
 {
 	memset(sidBuffer.data(), 0, sidBuffer.size());
 
-	// ConvertStringSidToSid alloue via LocalAlloc → doit être libéré par LocalFree :
-	// SmartStringSID (déleter LocalFree), pas SmartSID (déleter FreeSid).
-	SmartStringSID sid;
+	// SmartSID enveloppe un PSID binaire (type attendu par ConvertStringSidToSid) ;
+	// son déleter FreeSid appelle LocalFree en pratique, donc la libération d'un SID
+	// alloué par LocalAlloc est correcte. (SmartStringSID est pour un SID *chaîne*.)
+	SmartSID sid;
 	if (ConvertStringSidToSid(toConstWCharArray(sidString), sid.put()) && sid)
 	{
 		const auto sidLength = GetLengthSid(sid.get());

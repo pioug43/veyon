@@ -18,6 +18,20 @@ private slots:
 		QCOMPARE( rejected.size(), 2 );
 	}
 
+	void normalizesApplicationsDeterministically()
+	{
+		const auto first = ExamModeProfile::normalizeApplications(
+			{ QStringLiteral("App.EXE"), QStringLiteral("app.exe"), QStringLiteral(" beta "), QStringLiteral("") } );
+		const auto second = ExamModeProfile::normalizeApplications(
+			{ QStringLiteral("beta"), QStringLiteral("app.exe"), QStringLiteral("App.EXE") } );
+
+		QCOMPARE( first.size(), 2 );
+		// même ensemble d'entrées (à la casse près) => même liste normalisée => digest stable
+		QCOMPARE( first.first().toLower(), QStringLiteral("app.exe") );
+		QCOMPARE( first.last().toLower(), QStringLiteral("beta") );
+		QCOMPARE( first.size(), second.size() );
+	}
+
 	void rejectsUnsafeDomainSyntax()
 	{
 		QStringList rejected;

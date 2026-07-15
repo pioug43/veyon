@@ -37,9 +37,17 @@ are applied. Invalid site values are rejected and logged.
 | Crash-safe restoration | Registry/PAC backup | Marked `hosts` section | Marked `hosts` section |
 
 The non-Windows allow-list mode is refused explicitly because a `hosts` file
-cannot implement a safe allow list. A future Linux/macOS backend should use a
-managed local proxy or broker-controlled network policy, not synthetic `hosts`
-entries.
+cannot implement a safe allow list. The same applies to structured `urlRules`
+and to `urlDefaultAction: block` (allow-list semantics through the default
+action): on Linux/macOS the network part of such profiles is refused and logged
+rather than silently degraded to a weaker policy. A future Linux/macOS backend
+should use a managed local proxy or broker-controlled network policy, not
+synthetic `hosts` entries.
+
+Regular-expression URL rules are evaluated by the browser's PAC engine with
+JavaScript `RegExp` semantics. A pattern that is valid PCRE but invalid
+JavaScript never matches (the PAC wraps evaluation in `try/catch`), so prefer
+glob/domain expressions unless JavaScript compatibility has been checked.
 
 ## Structured profile example
 

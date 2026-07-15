@@ -241,14 +241,20 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 		{
 			vWarning() << "ExamMode:" << rejectedUrls.size() << "regle(s) URL invalide(s) ignoree(s)";
 		}
-		return startEnforcement( processPolicy, message.argument( Argument::Sites ).toStringList(), urlRules,
-			message.argument( Argument::SitesMode ).toString(),
-			message.argument( Argument::UrlDefaultAction ).toString(),
-			message.hasArgument( Argument::LeaseSeconds ) ?
-				message.argument( Argument::LeaseSeconds ).toInt() : DefaultLeaseSeconds,
-			message.argument( Argument::ProfileId ).toString(),
-			message.argument( Argument::ProfileRevision ).toLongLong(),
-			message.argument( Argument::ProfileDigest ).toString() );
+		// le message est traité même si le profil est refusé (validation) :
+		// on retourne toujours true pour ne pas le laisser paraître non géré.
+		if( startEnforcement( processPolicy, message.argument( Argument::Sites ).toStringList(), urlRules,
+				message.argument( Argument::SitesMode ).toString(),
+				message.argument( Argument::UrlDefaultAction ).toString(),
+				message.hasArgument( Argument::LeaseSeconds ) ?
+					message.argument( Argument::LeaseSeconds ).toInt() : DefaultLeaseSeconds,
+				message.argument( Argument::ProfileId ).toString(),
+				message.argument( Argument::ProfileRevision ).toLongLong(),
+				message.argument( Argument::ProfileDigest ).toString() ) == false )
+		{
+			vWarning() << "ExamMode: profil StartExam refusé — restrictions inchangées";
+		}
+		return true;
 	}
 
 	case FeatureCommand::StopExam:
@@ -362,9 +368,20 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		<< "empreinte" << m_profileDigest.left( 12 );
 
 	// Le portail ré-applique le profil chaque minute (couverture des postes
-	// connectés après coup) : on ne réécrit le fichier hosts QUE si la liste des
-	// sites ou le mode a changé, pour éviter une réécriture/flush DNS inutile.
-	const auto signature = m_profileDigest + QLatin1Char('\n') + hostsSignature( m_sites, m_sitesMode );
+	// connectés après coup) : on ne réapplique le filtrage réseau QUE si la
+	// politique réseau a changé (règles URL — qui incluent les sites hérités —,
+	// action par défaut, mode), pour éviter réécriture hosts/flush DNS et
+	// aller-retour registre inutiles quand seules les applis changent.
+	QStringList signatureParts{ m_sitesMode,
+		m_defaultUrlAction == ExamModeProfile::RuleAction::Allow ? QStringLiteral("allow") : QStringLiteral("block") };
+	for( const auto& rule : m_urlRules )
+	{
+		signatureParts.append( QStringLiteral("%1|%2|%3").arg(
+			rule.action == ExamModeProfile::RuleAction::Allow ? QStringLiteral("allow") : QStringLiteral("block"),
+			rule.regularExpression ? QStringLiteral("regex") : QStringLiteral("glob"),
+			rule.expression ) );
+	}
+	const auto signature = signatureParts.join( QLatin1Char('\n') );
 	if( signature != m_hostsSignature )
 	{
 		vInfo() << "ExamMode: enforcement -" << m_blockedApps.size() << "app(s),"
@@ -514,13 +531,6 @@ QString ExamModeFeaturePlugin::hostsFilePath()
 
 
 
-QString ExamModeFeaturePlugin::hostsSignature( const QStringList& sites, const QString& mode )
-{
-	return mode + QLatin1Char('\n') + sites.join( QLatin1Char('\n') );
-}
-
-
-
 /**
  * Applique le filtrage des sites. Windows : PAC (liste noire OU blanche) + DoH
  * désactivé, robuste au contournement. Linux : fichier hosts (liste noire).
@@ -533,6 +543,16 @@ bool ExamModeFeaturePlugin::applySiteFiltering( const QStringList& sites, const 
 	if( m_hasStructuredUrlRules )
 	{
 		vWarning() << "ExamMode: les regles URL ordonnees/regex necessitent le backend PAC Windows; profil refuse";
+		removeHostsSection();
+		flushDnsCache();
+		return false;
+	}
+	if( m_defaultUrlAction == ExamModeProfile::RuleAction::Block )
+	{
+		// « tout bloquer par défaut » = sémantique liste blanche : irréalisable via
+		// hosts — on refuse explicitement plutôt que de laisser le poste ouvert.
+		vWarning() << "ExamMode: l'action URL par défaut « block » nécessite le backend PAC Windows; "
+					   "le profil réseau est refusé sur cette plateforme";
 		removeHostsSection();
 		flushDnsCache();
 		return false;

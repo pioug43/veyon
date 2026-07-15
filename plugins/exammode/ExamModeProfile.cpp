@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QRegularExpression>
 #include <QSet>
 #include <QUrl>
@@ -53,7 +54,9 @@ ExamModeProfile::SiteMode ExamModeProfile::siteModeFromString( const QString& va
 
 QStringList ExamModeProfile::normalizeApplications( const QStringList& applications )
 {
-	QSet<QString> normalized;
+	// déduplication insensible à la casse et ordre déterministe (clés QMap
+	// triées) : indispensable à la stabilité du digest de profil.
+	QMap<QString, QString> normalized;
 	for( auto application : applications )
 	{
 		application = application.trimmed();
@@ -61,10 +64,10 @@ QStringList ExamModeProfile::normalizeApplications( const QStringList& applicati
 		application.remove( QLatin1Char('\n') );
 		if( application.isEmpty() == false )
 		{
-			normalized.insert( application );
+			normalized.insert( application.toLower(), application );
 		}
 	}
-	return sortedValues( normalized );
+	return normalized.values();
 }
 
 

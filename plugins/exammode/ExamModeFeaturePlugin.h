@@ -139,7 +139,6 @@ private:
 	bool removeHostsSection();		// retire notre section du fichier hosts (sans garde)
 	void flushDnsCache() const;		// purge le cache DNS résolveur pour un effet immédiat
 	static QString hostsFilePath();
-	static QString hostsSignature( const QStringList& sites, const QString& mode );
 #if defined(Q_OS_WIN)
 	bool applyWindowsSiteFiltering( const QStringList& sites, const QString& mode );
 	void removeWindowsSiteFiltering();
@@ -185,7 +184,7 @@ private:
 	int m_leaseSeconds{300};
 	bool m_hostsModified{false};
 	bool m_siteFilteringActive{false};
-	QString m_hostsSignature{};		// évite de réécrire hosts si sites+mode inchangés
+	QString m_hostsSignature{};		// évite de réappliquer le filtrage réseau si la politique est inchangée
 	QString m_appsSignature{};		// évite de réappliquer IFEO si la liste est inchangée
 
 	// délimiteurs de notre section dans le fichier hosts (retrait propre au stop)

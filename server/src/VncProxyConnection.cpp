@@ -286,6 +286,15 @@ bool VncProxyConnection::receiveClientMessage()
 			if (socket->peek(reinterpret_cast<char *>(&setPixelFormatMessage), sz_rfbSetPixelFormatMsg) == sz_rfbSetPixelFormatMsg)
 			{
 				auto format = setPixelFormatMessage.format;
+				// Valider bitsPerPixel/depth avant propagation : une valeur arbitraire
+				// (0, 255…) alimenterait le calcul de taille de rectangle côté client
+				// (rowSize → overflow). RFB n'autorise que 8/16/32 bits par pixel.
+				if( ( format.bitsPerPixel != 8 && format.bitsPerPixel != 16 && format.bitsPerPixel != 32 ) ||
+					format.depth > format.bitsPerPixel )
+				{
+					vCritical() << "rejecting invalid pixel format" << format.bitsPerPixel << format.depth;
+					return false;
+				}
 				format.redMax = qFromBigEndian(format.redMax);
 				format.greenMax = qFromBigEndian(format.greenMax);
 				format.blueMax = qFromBigEndian(format.blueMax);

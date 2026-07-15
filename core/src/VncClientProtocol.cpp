@@ -582,8 +582,20 @@ bool VncClientProtocol::receiveResizeFramebufferMessage()
 	if( readMessage( sz_rfbResizeFrameBufferMsg ) )
 	{
 		const auto msg = reinterpret_cast<const rfbResizeFrameBufferMsg *>( m_lastMessage.constData() );
-		m_framebufferWidth = qFromBigEndian( msg->framebufferWidth );
-		m_framebufferHeight = qFromBigEndian( msg->framebufferHeigth );
+		const auto newWidth = qFromBigEndian( msg->framebufferWidth );
+		const auto newHeight = qFromBigEndian( msg->framebufferHeigth );
+		// Valider comme à l'init (receiveServerInitMessage) : sinon un resize réseau
+		// fixe des dimensions arbitraires (jusqu'à 65535) qui alimentent ensuite le
+		// calcul de taille de rectangle (overflow) et cassent l'invariant de taille.
+		if( newWidth == 0 || newHeight == 0 ||
+			newWidth > MaximumFramebufferDimension || newHeight > MaximumFramebufferDimension )
+		{
+			vCritical() << "invalid resized framebuffer size" << newWidth << newHeight;
+			m_socket->close();
+			return false;
+		}
+		m_framebufferWidth = newWidth;
+		m_framebufferHeight = newHeight;
 
 		return true;
 	}
@@ -999,8 +1011,10 @@ bool VncClientProtocol::handleRectEncodingTight(QBuffer& buffer,
 
 	const int MaximumUncompressedSize = 12;
 
-	const int rowSize = (rectHeader.r.w * bitsPerPixel + 7) / 8;
-	const int uncompressedRectSize = rectHeader.r.h * rowSize;
+	// Calcul en 64 bits : w*bitsPerPixel*h peut dépasser INT_MAX (dims jusqu'à 16384,
+	// bitsPerPixel potentiellement grand) → overflow signé (UB) en int.
+	const qint64 rowSize = (static_cast<qint64>( rectHeader.r.w ) * bitsPerPixel + 7) / 8;
+	const qint64 uncompressedRectSize = static_cast<qint64>( rectHeader.r.h ) * rowSize;
 	if (uncompressedRectSize < MaximumUncompressedSize)
 	{
 		return buffer.read(uncompressedRectSize).size() == uncompressedRectSize;

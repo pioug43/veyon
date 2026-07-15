@@ -515,8 +515,22 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 			QString destDir;
 			if (message.hasArgument(Argument::DestinationDirectory))
 			{
-				destDir = resolvePathToHome(
-								  message.argument(Argument::DestinationDirectory).toString());
+				const auto requestedDir = message.argument(Argument::DestinationDirectory).toString();
+				// Sécurité : n'accepter qu'un sous-dossier RELATIF du home, sans segment
+				// « .. » — sinon un master/WebAPI (authentifié mais potentiellement
+				// hostile) écrirait hors du home via un chemin absolu ou une traversée.
+				auto normalized = requestedDir;
+				normalized.replace( QLatin1Char('\\'), QLatin1Char('/') );
+				const bool traversal = normalized.split( QLatin1Char('/') ).contains( QStringLiteral("..") );
+				if( requestedDir.isEmpty() == false &&
+					QDir::isAbsolutePath( requestedDir ) == false && traversal == false )
+				{
+					destDir = resolvePathToHome( requestedDir );
+				}
+				else if( requestedDir.isEmpty() == false )
+				{
+					vCritical() << "refusing unsafe destination directory" << requestedDir;
+				}
 			}
 			if (destDir.isEmpty())
 			{

@@ -52,7 +52,10 @@ TextMessageDialog::~TextMessageDialog()
 
 void TextMessageDialog::accept()
 {
-	m_msgStr = ui->textEdit->toHtml();
+	// toHtml() renvoie TOUJOURS un document HTML complet (jamais vide) : on teste le
+	// texte brut pour ne pas diffuser un message vide (le garde isEmpty() de l'appelant
+	// ne se déclencherait jamais autrement).
+	m_msgStr = ui->textEdit->toPlainText().trimmed().isEmpty() ? QString{} : ui->textEdit->toHtml();
 	m_titleStr = ui->titleEdit->text().trimmed();
 	QDialog::accept();
 }

@@ -48,7 +48,11 @@ FileReadThread::FileReadThread( const QString& fileName, QObject* parent ) :
 
 FileReadThread::~FileReadThread()
 {
+	// wait() indispensable : la lambda postée sur m_thread accède à this/m_file/
+	// m_mutex ; sans attendre sa fin, ces membres seraient détruits pendant son
+	// exécution (use-after-free).
 	m_thread->quit();
+	m_thread->wait();
 }
 
 

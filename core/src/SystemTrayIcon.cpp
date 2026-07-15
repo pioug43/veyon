@@ -161,8 +161,9 @@ bool SystemTrayIcon::handleFeatureMessage( VeyonWorkerInterface& worker, const F
 											   message.argument( Argument::MessageText ).toString() );
 			messageBox->setAttribute( Qt::WA_DeleteOnClose );
 			messageBox->setWindowFlags( messageBox->windowFlags() | Qt::WindowStaysOnTopHint );
-			connect( messageBox, &QObject::destroyed,
-					 QCoreApplication::instance(), &QCoreApplication::quit );
+			// Ne PAS quitter l'application à la fermeture de la boîte : ce worker de
+			// session est persistant (il traite aussi SetToolTip/SetOverlayIcon) ;
+			// quitter ici terminait prématurément le worker à chaque notification.
 			QTimer::singleShot( MessageAutoCloseInterval, messageBox, &QWidget::close );
 			messageBox->show();
 			messageBox->raise();

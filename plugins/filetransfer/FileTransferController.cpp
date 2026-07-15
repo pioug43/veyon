@@ -115,9 +115,11 @@ void FileTransferController::stop()
 		}
 
 		m_plugin->sendCancelMessage( m_currentTransferId, m_interfaces );
-	}
 
-	Q_EMIT finished();
+		// finished() seulement si on a réellement arrêté un transfert en cours :
+		// sinon (transfert déjà terminé, fermeture du dialogue) on émettait un doublon.
+		Q_EMIT finished();
+	}
 }
 
 

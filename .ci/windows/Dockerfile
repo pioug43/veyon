@@ -51,7 +51,7 @@ RUN git clone --depth 1 https://invent.kde.org/libraries/qca.git /tmp/qca \
  && /usr/x86_64-w64-mingw32/bin/qt-cmake -S /tmp/qca -B /tmp/qca/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/mxe/usr/${MXE_TARGET} \
-        -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF \
+        -DQT6=ON -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF \
  && ninja -C /tmp/qca/build \
  && ninja -C /tmp/qca/build install \
  && rm -rf /tmp/qca

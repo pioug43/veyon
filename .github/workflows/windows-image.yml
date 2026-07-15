@@ -32,3 +32,6 @@ jobs:
           file: .ci/windows/Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/veyon-ci-windows:latest
+          # cache la couche MXE (~4 h) pour itérer vite sur les étapes suivantes (QCA…)
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

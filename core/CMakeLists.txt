@@ -71,7 +71,9 @@ else()
 endif()
 
 if(VEYON_BUILD_WINDOWS)
-	target_compile_definitions(veyon-core PUBLIC _WIN32_WINNT=0x0602)
+	# 0x0A00 (Win10) : aligné sur le mkspec Qt6/MXE (qui définit déjà _WIN32_WINNT=0x0A00)
+	# pour éviter une redéfinition fatale sous -Werror. Cf. cmake/modules/PchHelpers.cmake.
+	target_compile_definitions(veyon-core PUBLIC _WIN32_WINNT=0x0A00)
 endif()
 
 if(WITH_PCH)

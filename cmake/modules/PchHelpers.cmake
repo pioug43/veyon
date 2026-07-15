@@ -13,6 +13,8 @@ macro(add_pch_target TARGET_NAME HEADER)
 	target_link_libraries(${TARGET_NAME} PUBLIC Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Concurrent Qt${QT_MAJOR_VERSION}::Network Qt${QT_MAJOR_VERSION}::Widgets)
 	target_precompile_headers(${TARGET_NAME} PUBLIC ${HEADER})
 	if(VEYON_BUILD_WINDOWS)
-		target_compile_definitions(${TARGET_NAME} PUBLIC _WIN32_WINNT=0x0602)
+		# 0x0A00 (Win10) : Qt6/MXE impose déjà _WIN32_WINNT=0x0A00 dans son mkspec ;
+		# on s'aligne pour éviter une redéfinition (fatale sous -Werror). VDI = Win10/11.
+		target_compile_definitions(${TARGET_NAME} PUBLIC _WIN32_WINNT=0x0A00)
 	endif()
 endmacro()

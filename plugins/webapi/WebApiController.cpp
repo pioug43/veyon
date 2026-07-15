@@ -24,18 +24,45 @@
 
 #include <QTcpSocket>
 #include <QBuffer>
+#include <QDir>
 #include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
 #include <QImageWriter>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QRegularExpression>
 #include <initializer_list>
 #include <limits>
 #include <utility>
 
 #include "ComputerControlInterface.h"
 #include "FeatureManager.h"
+#include "Filesystem.h"
 #include "PlatformNetworkFunctions.h"
+#include "VeyonConfiguration.h"
 #include "WebApiAuthenticationProxy.h"
 #include "WebApiConfiguration.h"
 #include "WebApiController.h"
+
+
+namespace
+{
+
+QString crashSpoolDirectory()
+{
+	return VeyonCore::filesystem().expandPath( VeyonCore::config().crashReportDirectory() );
+}
+
+bool isValidCrashReportId( const QString& id )
+{
+	// Empêche toute traversée de chemin : un id est un nom de base « crash-… »
+	// sans séparateur ni point d'extension.
+	static const QRegularExpression re( QStringLiteral("^crash-[A-Za-z0-9_-]+$") );
+	return re.match( id ).hasMatch();
+}
+
+}
 
 
 WebApiController::WebApiController( const WebApiConfiguration& configuration, QObject* parent ) :
@@ -866,6 +893,106 @@ WebApiController::Response WebApiController::getSessionInformation(const Request
 			{k2s(Key::SessionHostName), controlInterface->sessionInfo().hostName},
 		}
 	};
+}
+
+
+
+WebApiController::Response WebApiController::getCrashReports( const Request& request )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	QVariantList reports;
+	const QDir dir( crashSpoolDirectory() );
+	const auto files = dir.entryInfoList( { QStringLiteral("crash-*.json") }, QDir::Files, QDir::Time );
+	reports.reserve( files.size() );
+
+	for( const auto& fileInfo : files )
+	{
+		QFile f( fileInfo.absoluteFilePath() );
+		if( f.open( QIODevice::ReadOnly ) == false )
+		{
+			continue;
+		}
+		const auto doc = QJsonDocument::fromJson( f.readAll() );
+		f.close();
+		if( doc.isObject() == false )
+		{
+			continue;
+		}
+
+		auto obj = doc.object();
+		obj.insert( QStringLiteral("id"), fileInfo.completeBaseName() );
+		obj.insert( QStringLiteral("reportSize"), fileInfo.size() );
+		reports.append( obj.toVariantMap() );
+	}
+
+	return reports;
+}
+
+
+
+WebApiController::Response WebApiController::getCrashReportDump( const Request& request, const QString& id )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	if( isValidCrashReportId( id ) == false )
+	{
+		return Error::InvalidData;
+	}
+
+	const QDir dir( crashSpoolDirectory() );
+	// Minidump Windows si présent, sinon trace brute Linux.
+	for( const auto& extension : { QStringLiteral(".dmp"), QStringLiteral(".trace") } )
+	{
+		QFile f( dir.absoluteFilePath( id + extension ) );
+		if( f.exists() && f.open( QIODevice::ReadOnly ) )
+		{
+			const auto data = f.readAll();
+			f.close();
+			return Response{ data };
+		}
+	}
+
+	return Error::InvalidData;
+}
+
+
+
+WebApiController::Response WebApiController::deleteCrashReport( const Request& request, const QString& id )
+{
+	m_apiTotalRequestsCounter++;
+
+	Response checkResponse{};
+	if( ( checkResponse = checkConnection( request ) ).error != Error::NoError )
+	{
+		return checkResponse;
+	}
+
+	if( isValidCrashReportId( id ) == false )
+	{
+		return Error::InvalidData;
+	}
+
+	const QDir dir( crashSpoolDirectory() );
+	const auto siblings = dir.entryInfoList( { id + QStringLiteral(".*") }, QDir::Files );
+	for( const auto& sibling : siblings )
+	{
+		QFile::remove( sibling.absoluteFilePath() );
+	}
+
+	return QVariantMap{ { QStringLiteral("deleted"), true } };
 }
 
 

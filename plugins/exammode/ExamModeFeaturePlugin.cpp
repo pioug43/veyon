@@ -517,9 +517,33 @@ QVariantMap ExamModeFeaturePlugin::featureStatus( Feature::Uid featureUid,
 void ExamModeFeaturePlugin::sendAsyncFeatureMessages( VeyonServerInterface& server,
 												   const MessageContext& messageContext )
 {
-	if( isEndpointComponent() )
+	if( isEndpointComponent() == false )
 	{
-		server.sendFeatureMessageReply( messageContext, statusMessage() );
+		return;
+	}
+
+	auto* const ioDevice = messageContext.ioDevice();
+	if( ioDevice == nullptr )
+	{
+		return;
+	}
+
+	// sendAsyncFeatureMessages() est invoqué pour CHAQUE message serveur proxifié
+	// (VncProxyConnection::serverMessageProcessed, Qt::DirectConnection, en pleine
+	// boucle de lecture). Comme MonitoringMode, on ne doit émettre que lorsque le
+	// statut a réellement changé POUR CE CLIENT : émettre un ExamStatus par trame
+	// injecte un message de fonctionnalité dans le flux RFB à chaque mise à jour,
+	// ce qui le désynchronise et fait planter veyon-server (écran noir + connexion
+	// qui bat lors de la prise de main).
+	static const char* const sentVersionProperty = "ExamModeStatusVersion";
+	if( ioDevice->property( sentVersionProperty ).toULongLong() == m_statusVersion )
+	{
+		return;
+	}
+
+	if( server.sendFeatureMessageReply( messageContext, statusMessage() ) )
+	{
+		ioDevice->setProperty( sentVersionProperty, m_statusVersion );
 	}
 }
 
@@ -648,6 +672,7 @@ void ExamModeFeaturePlugin::setStatus( const QString& status, const QString& err
 	m_errorMessage = errorMessage;
 	m_backendResults = backendResults;
 	m_statusTimestampMs = QDateTime::currentMSecsSinceEpoch();
+	++m_statusVersion;
 }
 
 

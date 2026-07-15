@@ -270,6 +270,10 @@ private:
 	qint64 m_statusTimestampMs{0};
 	QString m_statusSessionId{};
 	quint64 m_statusSequence{0};
+	// Version monotone du statut : n'émettre le rapport ExamStatus (par client) que
+	// lorsqu'il a réellement changé. Démarre à 1 pour qu'un client fraîchement
+	// connecté (propriété absente = 0) reçoive le statut courant exactement une fois.
+	quint64 m_statusVersion{1};
 	mutable QMutex m_remoteStatusMutex;
 	QHash<const ComputerControlInterface*, QVariantMap> m_remoteStatuses;
 	QSet<const ComputerControlInterface*> m_trackedRemoteInterfaces;

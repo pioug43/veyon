@@ -326,6 +326,11 @@ bool MonitoringMode::handleFeatureMessage(VeyonServerInterface& server,
 
 void MonitoringMode::sendAsyncFeatureMessages(VeyonServerInterface& server, const MessageContext& messageContext)
 {
+	if( messageContext.ioDevice() == nullptr )
+	{
+		return;
+	}
+
 	const auto activeFeaturesVersion = messageContext.ioDevice()->property(activeFeaturesVersionProperty()).toInt();
 
 	if (activeFeaturesVersion != m_activeFeaturesVersion)

@@ -16,8 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # MXE ne fournit pas OpenLDAP → on construit sans le plugin LDAP
-      # (postes = auth keyfile ; LDAP reste sur le broker Linux).
-      CMAKE_FLAGS: -DWITH_LDAP=OFF
+      # (postes = auth keyfile ; LDAP reste sur le broker Linux). MXE ne fournit
+      # pas non plus LibVNCServer → on utilise la copie bundled (sous-module).
+      CMAKE_FLAGS: -DWITH_LDAP=OFF -DWITH_BUNDLED_LIBVNC=ON
     container:
       image: ghcr.io/${{ github.repository_owner }}/veyon-ci-windows:latest
       credentials:

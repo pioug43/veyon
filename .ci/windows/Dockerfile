@@ -44,6 +44,11 @@ RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" \
 # pour ne pas invalider le cache (long) de la couche qtbase ci-dessus.
 RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" qt6-qt5compat
 
+# Module Qt HttpServer (Qt6::HttpServer) requis par le plugin webapi (le portail
+# pilote ExamMode via WebAPI). Déps déjà bâties (qtbase/qtwebsockets) → build court.
+# Couche séparée pour préserver le cache des couches précédentes.
+RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" qt6-qthttpserver
+
 # Layout attendu par build.sh (/usr/x86_64-w64-mingw32 + qt-cmake wrapper)
 RUN ln -sfn /opt/mxe/usr/${MXE_TARGET} /usr/x86_64-w64-mingw32 \
  && printf '#!/bin/sh\nexec /opt/mxe/usr/bin/%s-cmake "$@"\n' "${MXE_TARGET}" \

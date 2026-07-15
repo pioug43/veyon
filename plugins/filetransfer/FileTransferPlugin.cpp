@@ -500,7 +500,7 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 		m_currentFile.close();
 		m_currentFile.setFileName({});
 		m_currentFileName.clear();
-		m_currentTransferId = {};
+		m_currentTransferId = QUuid{};
 
 		{
 			const auto requestedFileName = message.argument(Argument::FileName).toString();
@@ -565,7 +565,7 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 				m_currentFile.remove();
 				m_currentFile.setFileName({});
 				m_currentFileName.clear();
-				m_currentTransferId = {};
+				m_currentTransferId = QUuid{};
 			}
 		}
 		else
@@ -581,7 +581,7 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 			m_currentFile.remove();
 			m_currentFile.setFileName({});
 			m_currentFileName.clear();
-			m_currentTransferId = {};
+			m_currentTransferId = QUuid{};
 		}
 		else
 		{
@@ -602,7 +602,7 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 		}
 		m_currentFile.setFileName({});
 		m_currentFileName.clear();
-		m_currentTransferId = {};
+		m_currentTransferId = QUuid{};
 		return true;
 
 	case FeatureCommand::OpenTransferFolder:

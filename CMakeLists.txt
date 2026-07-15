@@ -207,8 +207,11 @@ if(WITH_BUNDLED_LIBVNC)
 	set_default_target_properties(vncclient)
 	set_default_target_properties(vncserver)
 
-	target_compile_options(vncclient PRIVATE "-Wno-unused-function;-Wno-unused-variable;-Wno-deprecated-declarations")
-	target_compile_options(vncserver PRIVATE "-Wno-deprecated-declarations;-Wno-unused-function;-Wno-unused-variable;-Wno-unused-but-set-variable;-Wno-discarded-qualifiers;-Wno-unused-result;-Wno-restrict;-Wno-switch;-Wno-maybe-uninitialized")
+	# Code vendored (libvncserver) : on ne traite pas ses warnings en erreurs. Les
+	# gcc récents (MXE) promeuvent p.ex. incompatible-pointer-types en erreur ;
+	# -Wno-error les ramène à des avertissements plutôt que d'énumérer chaque -Wno-*.
+	target_compile_options(vncclient PRIVATE "-Wno-error;-Wno-unused-function;-Wno-unused-variable;-Wno-deprecated-declarations")
+	target_compile_options(vncserver PRIVATE "-Wno-error;-Wno-deprecated-declarations;-Wno-unused-function;-Wno-unused-variable;-Wno-unused-but-set-variable;-Wno-discarded-qualifiers;-Wno-unused-result;-Wno-restrict;-Wno-switch;-Wno-maybe-uninitialized")
 
 	target_include_directories(vncclient PUBLIC
 		${libvncserver_SOURCE_DIR}/src/common

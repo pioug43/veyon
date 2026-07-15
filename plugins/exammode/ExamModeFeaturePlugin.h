@@ -31,6 +31,7 @@
 #include "FeatureProviderInterface.h"
 
 class QTimer;
+class ExamModeLinuxExecGuard;
 
 /**
  * Mode examen (Portail VDI) : quand la supervision est activée sur un poste VDI,
@@ -187,6 +188,7 @@ private:
 
 	QTimer* m_timer{nullptr};
 	QTimer* m_watchdog{nullptr};	// lève tout si le portail cesse de ré-appliquer (fail-safe)
+	ExamModeLinuxExecGuard* m_execGuard{nullptr};	// prévention de lancement Linux (fanotify)
 	bool m_active{false};
 	QStringList m_blockedApps{};
 	QStringList m_launchPreventedApps{};

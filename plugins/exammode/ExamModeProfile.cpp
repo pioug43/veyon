@@ -99,11 +99,12 @@ QStringList ExamModeProfile::strictModeApplications( const QString& platform )
 			QStringLiteral("Activity Monitor"),
 		};
 	}
-	// linux (défaut)
+	// linux (défaut). NB : « sh » et « dash » sont volontairement exclus — trop
+	// de scripts système/session les utilisent ; les tuer romprait la session.
+	// On bloque les shells interactifs et les interpréteurs.
 	return {
-		// shells
-		QStringLiteral("bash"), QStringLiteral("sh"), QStringLiteral("zsh"), QStringLiteral("dash"),
-		QStringLiteral("fish"), QStringLiteral("ksh"), QStringLiteral("tcsh"),
+		// shells interactifs
+		QStringLiteral("bash"), QStringLiteral("zsh"), QStringLiteral("fish"),
 		// interpréteurs
 		QStringLiteral("python3"), QStringLiteral("python"), QStringLiteral("node"), QStringLiteral("perl"),
 		QStringLiteral("ruby"), QStringLiteral("lua"), QStringLiteral("php"),

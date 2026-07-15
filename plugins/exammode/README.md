@@ -73,10 +73,36 @@ layer — that is what the Windows PAC backend is for).
 | Capability | Windows | Linux | macOS |
 |---|---:|---:|---:|
 | Kill already-running applications | Yes | Yes | Yes |
-| Prevent application launch | Yes, IFEO | No | No |
-| Site block list | PAC policies | `hosts` | `hosts` |
-| Site allow list | PAC policies | Refused | Refused |
-| Crash-safe restoration | Registry/PAC backup | Marked `hosts` section | Marked `hosts` section |
+| Prevent application launch | Yes, IFEO | Yes, fanotify | No |
+| Site block list | PAC policies | `hosts` / firewall | `hosts` |
+| Site allow list | PAC policies | firewall (CIDR) | Refused |
+| Crash-safe restoration | Registry/PAC backup | Marked `hosts` / nftables dead-man | Marked `hosts` section |
+
+## Linux launch prevention (fanotify)
+
+On Linux, prevent-launch applications are enforced in the kernel via
+`fanotify` with `FAN_OPEN_EXEC_PERM`: every `execve` on the root filesystem is
+submitted to a userspace permission decision, and a blocked binary is denied
+*before* it runs. Unlike a `PATH` shim or an `LD_PRELOAD` shim, this covers all
+launch paths — interactive shell, GUI launcher, absolute path, or a portable copy
+carrying the same file name — and cannot be bypassed by ignoring `PATH`.
+
+* **Privilege / kernel**: requires root (`CAP_SYS_ADMIN`) and kernel ≥ 5.0. If
+  unavailable, `startGuarding()` fails and the plugin falls back to the periodic
+  kill loop (logged); enforcement is never a hard failure.
+* **Fail-safe**: matching is a deny-list with default-allow, so a path that cannot
+  be resolved is allowed (the OS is never broken by unknown execs). If the Veyon
+  process dies, the kernel closes the fanotify descriptor and pending execs are
+  allowed — the machine is never left unable to start programs.
+* **Matching**: by file basename (case-insensitive, `.exe` suffix tolerated).
+  Renaming a binary defeats name matching (documented limitation; a content-hash
+  mode is the natural future enhancement). The periodic kill loop remains as a
+  complementary layer for already-running and renamed processes.
+* **Scope note**: with `strict`, interactive shells and interpreters are on the
+  block list, so during an exam new `bash`/`python`/… launches are denied
+  system-wide. `sh`/`dash` are deliberately excluded to avoid breaking session and
+  system scripts. ExamMode never invokes a shell for its own operations, so strict
+  mode does not disable its firewall/DNS/registry helpers.
 
 The non-Windows allow-list mode is refused explicitly because a `hosts` file
 cannot implement a safe allow list. The same applies to structured `urlRules`

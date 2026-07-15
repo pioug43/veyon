@@ -5,6 +5,8 @@ build_veyon_plugin(exammode
 	SOURCES
 	ExamModeFeaturePlugin.cpp
 	ExamModeFeaturePlugin.h
+	ExamModeLinuxExecGuard.cpp
+	ExamModeLinuxExecGuard.h
 	ExamModeProfile.cpp
 	ExamModeProfile.h
 	)

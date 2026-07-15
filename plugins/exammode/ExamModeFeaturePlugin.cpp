@@ -35,6 +35,7 @@
 #include <QTimer>
 
 #include "ExamModeFeaturePlugin.h"
+#include "ExamModeLinuxExecGuard.h"
 #include "ExamModeProfile.h"
 #include "FeatureMessage.h"
 #include "VeyonCore.h"
@@ -976,10 +977,12 @@ void ExamModeFeaturePlugin::removeLinuxFirewall()
 {
 	disarmFirewallDeadMan();
 
+	// appel direct de nft (sans shell, pour ne pas dépendre d'un /bin/sh que le
+	// mode strict pourrait bloquer). Le delete d'une table absente renvoie un
+	// code non nul : on l'ignore volontairement (opération idempotente).
 	QProcess nft;
-	// delete d'une table absente échoue : on tolère silencieusement via sh.
-	nft.start( QStringLiteral("sh"), { QStringLiteral("-c"),
-		QStringLiteral("nft delete table inet veyon_exammode 2>/dev/null || true") } );
+	nft.start( QStringLiteral("nft"), { QStringLiteral("delete"), QStringLiteral("table"),
+		QStringLiteral("inet"), QStringLiteral("veyon_exammode") } );
 	nft.waitForStarted( 3000 );
 	nft.waitForFinished( 5000 );
 
@@ -998,19 +1001,16 @@ void ExamModeFeaturePlugin::removeLinuxFirewall()
  */
 void ExamModeFeaturePlugin::armFirewallDeadMan( int seconds ) const
 {
-	QProcess stop;
-	stop.start( QStringLiteral("sh"), { QStringLiteral("-c"),
-		QStringLiteral("systemctl stop veyon-exammode-failsafe.timer 2>/dev/null; "
-					   "systemctl reset-failed veyon-exammode-failsafe.timer 2>/dev/null; true") } );
-	stop.waitForStarted( 3000 );
-	stop.waitForFinished( 5000 );
+	disarmFirewallDeadMan();		// retire une minuterie précédente
 
+	// systemd-run appelle nft directement (sans shell). nft delete d'une table
+	// absente renvoie non nul mais le déclenchement est unique et sans effet.
 	QProcess run;
 	run.start( QStringLiteral("systemd-run"), {
 		QStringLiteral("--unit=veyon-exammode-failsafe"),
 		QStringLiteral("--on-active=%1s").arg( qMax( 60, seconds ) ),
-		QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-		QStringLiteral("nft delete table inet veyon_exammode 2>/dev/null || true") } );
+		QStringLiteral("nft"), QStringLiteral("delete"), QStringLiteral("table"),
+		QStringLiteral("inet"), QStringLiteral("veyon_exammode") } );
 	if( run.waitForStarted( 3000 ) == false || run.waitForFinished( 5000 ) == false ||
 		run.exitStatus() != QProcess::NormalExit || run.exitCode() != 0 )
 	{
@@ -1023,12 +1023,18 @@ void ExamModeFeaturePlugin::armFirewallDeadMan( int seconds ) const
 
 void ExamModeFeaturePlugin::disarmFirewallDeadMan() const
 {
+	// appels directs systemctl (sans shell) ; codes de retour ignorés.
 	QProcess stop;
-	stop.start( QStringLiteral("sh"), { QStringLiteral("-c"),
-		QStringLiteral("systemctl stop veyon-exammode-failsafe.timer 2>/dev/null; "
-					   "systemctl reset-failed veyon-exammode-failsafe.timer 2>/dev/null; true") } );
+	stop.start( QStringLiteral("systemctl"), { QStringLiteral("stop"),
+		QStringLiteral("veyon-exammode-failsafe.timer") } );
 	stop.waitForStarted( 3000 );
 	stop.waitForFinished( 5000 );
+
+	QProcess reset;
+	reset.start( QStringLiteral("systemctl"), { QStringLiteral("reset-failed"),
+		QStringLiteral("veyon-exammode-failsafe.timer") } );
+	reset.waitForStarted( 3000 );
+	reset.waitForFinished( 5000 );
 }
 
 #endif
@@ -1131,6 +1137,33 @@ bool ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
 		removeLaunchPrevention();
 	}
 	return success;
+#elif defined(Q_OS_LINUX)
+	// Prévention de lancement au niveau noyau via fanotify (FAN_OPEN_EXEC_PERM).
+	// Le kill périodique (enforceTick) reste actif en complément et en repli si
+	// fanotify est indisponible (privilèges/kernel). Fail-safe : jamais d'échec dur.
+	if( apps.isEmpty() )
+	{
+		if( m_execGuard )
+		{
+			m_execGuard->stopGuarding();
+		}
+		return true;
+	}
+	if( m_execGuard == nullptr )
+	{
+		m_execGuard = new ExamModeLinuxExecGuard( this );
+	}
+	if( m_execGuard->isActive() )
+	{
+		m_execGuard->updateBlocked( apps );
+		return true;
+	}
+	if( m_execGuard->startGuarding( apps ) == false )
+	{
+		vWarning() << "ExamMode: prévention de lancement noyau indisponible — "
+					  "repli sur la terminaison périodique (kill)";
+	}
+	return true;
 #else
 	Q_UNUSED(apps)
 	return true;
@@ -1169,6 +1202,11 @@ void ExamModeFeaturePlugin::removeLaunchPrevention()
 	else
 	{
 		vWarning() << "ExamMode: restauration IFEO incomplète; elle sera retentée au prochain démarrage";
+	}
+#elif defined(Q_OS_LINUX)
+	if( m_execGuard )
+	{
+		m_execGuard->stopGuarding();
 	}
 #endif
 }

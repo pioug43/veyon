@@ -1504,11 +1504,9 @@ void ExamModeFeaturePlugin::auditRunningBlockedProcesses() const
 		return;
 	}
 
-	QProcess process;
 #if defined(Q_OS_WIN)
 	// La passe Windows combine audit et terminaison dans enforceTick() afin de ne
 	// faire qu'un seul instantané Toolhelp par intervalle.
-	Q_UNUSED(process)
 #else
 	QStringList patterns;
 	for( const auto& app : m_blockedApps )
@@ -1528,25 +1526,32 @@ void ExamModeFeaturePlugin::auditRunningBlockedProcesses() const
 		return;
 	}
 	// pgrep -x -l : correspondance exacte du nom (comm), affiche « pid nom ».
-	process.start( QStringLiteral("pgrep"), { QStringLiteral("-x"), QStringLiteral("-l"), patterns.join( QLatin1Char('|') ) } );
-	if( process.waitForStarted( 1000 ) == false || process.waitForFinished( 1000 ) == false )
-	{
-		return;
-	}
-	QSet<QString> found;
-	const auto lines = QString::fromLocal8Bit( process.readAllStandardOutput() ).split( QLatin1Char('\n'), Qt::SkipEmptyParts );
-	for( const auto& line : lines )
-	{
-		const auto name = line.section( QLatin1Char(' '), 1 ).trimmed();
-		if( name.isEmpty() == false )
-		{
-			found.insert( name );
-		}
-	}
-	if( found.isEmpty() == false )
-	{
-		vWarning() << "ExamMode: tentative de contournement — processus interdit(s) actif(s):" << QStringList( found.values() );
-	}
+	// ASYNCHRONE : cette passe s'exécute toutes les 1,5 s sur le thread qui pompe
+	// aussi le proxy VNC ; un waitForFinished bloquant y figerait le framebuffer
+	// pendant un examen. On lance pgrep sans bloquer et on journalise à la fin.
+	// L'audit ne fait que journaliser (aucune mutation d'état), donc rester const.
+	auto* process = new QProcess;
+	QObject::connect( process, &QProcess::finished, process,
+		[process]( int, QProcess::ExitStatus ) {
+			QSet<QString> found;
+			const auto lines = QString::fromLocal8Bit( process->readAllStandardOutput() ).split( QLatin1Char('\n'), Qt::SkipEmptyParts );
+			for( const auto& line : lines )
+			{
+				const auto name = line.section( QLatin1Char(' '), 1 ).trimmed();
+				if( name.isEmpty() == false )
+				{
+					found.insert( name );
+				}
+			}
+			if( found.isEmpty() == false )
+			{
+				vWarning() << "ExamMode: tentative de contournement — processus interdit(s) actif(s):" << QStringList( found.values() );
+			}
+			process->deleteLater();
+		} );
+	QObject::connect( process, &QProcess::errorOccurred, process,
+		[process]( QProcess::ProcessError ) { process->deleteLater(); } );
+	process->start( QStringLiteral("pgrep"), { QStringLiteral("-x"), QStringLiteral("-l"), patterns.join( QLatin1Char('|') ) } );
 #endif
 }
 

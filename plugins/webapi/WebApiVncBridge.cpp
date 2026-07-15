@@ -264,6 +264,13 @@ bool WebApiVncBridge::parseClientMessage()
 			return false;
 		}
 		// pixel-format starts at offset 4 (1 type + 3 padding)
+		// Rejeter un bitsPerPixel non standard : les boucles d'encodage font
+		// value >> (byte*8) ; avec bitsPerPixel > 32 (byte >= 4), le décalage
+		// atteint/dépasse 32 sur un quint32 => comportement indéfini.
+		if( buffer[4] != 8 && buffer[4] != 16 && buffer[4] != 32 )
+		{
+			return false;
+		}
 		m_pixelFormat.bitsPerPixel = buffer[4];
 		m_pixelFormat.depth = buffer[5];
 		m_pixelFormat.bigEndian = buffer[6];

@@ -90,14 +90,16 @@ Logger::~Logger()
 {
 	vDebug() << "Shutdown";
 
-	QMutexLocker l( &m_logMutex );
-
 	qInstallMessageHandler(nullptr);
 
 	s_instanceMutex.lock();
 	s_instance = nullptr;
 	s_instanceMutex.unlock();
 
+	// s_instance est désormais nul : qtMsgHandler ne déréférencera plus cette
+	// instance. On ne prend m_logMutex QU'APRÈS (et sans tenir s_instanceMutex),
+	// pour éviter l'inversion d'ordre avec le handler (deadlock AB-BA).
+	QMutexLocker l( &m_logMutex );
 	delete m_logFile;
 }
 

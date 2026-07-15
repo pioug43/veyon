@@ -68,6 +68,9 @@ void DesktopAccessDialog::exec( FeatureWorkerManager* featureWorkerManager, cons
 			.addArgument( Argument::User, user )
 			.addArgument( Argument::Host, host ) );
 
+	// exec() peut être rappelé : déconnecter l'ancienne lambda avant de reconnecter,
+	// sinon les connexions timeout s'accumulent et abort() serait invoqué N fois.
+	m_abortTimer.disconnect();
 	connect(&m_abortTimer, &QTimer::timeout, this, [=, this]() { abort(featureWorkerManager); });
 	m_abortTimer.start( DialogTimeout );
 }

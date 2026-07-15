@@ -509,7 +509,10 @@ bool AccessControlProvider::matchList(const QStringList& list, const QString& pa
 
 	if (pattern.endsWith(QLatin1Char('*')))
 	{
-		const QRegularExpression rx(pattern);
+		// Motif GLOB, pas regex : fromWildcard produit une expression ANCRÉE (match
+		// plein). Auparavant QRegularExpression(pattern) interprétait « room* » comme
+		// « roo » + « m* » non ancré → matchait « classroom » (sur-permissif).
+		const auto rx = QRegularExpression::fromWildcard(pattern, Qt::CaseSensitive);
 		if (rx.isValid())
 		{
 			return list.indexOf(rx) >= 0;

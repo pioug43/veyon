@@ -191,9 +191,11 @@ rfbBool VeyonConnection::handleSecTypeVeyon( rfbClient* client, uint32_t authSch
 
 	const auto authTypeCount = message.read().toInt();
 
-	if( authTypeCount == 0 )
+	// Borne anti-DoS : authTypeCount vient du réseau et sert de taille à reserve() ;
+	// non borné, un serveur hostile provoque une allocation géante (bad_alloc/crash).
+	if( authTypeCount <= 0 || authTypeCount > 32 )
 	{
-		vDebug() << QThread::currentThreadId() << "no auth types received";
+		vDebug() << QThread::currentThreadId() << "no/implausible auth types received" << authTypeCount;
 		if( proxy )
 		{
 			proxy->notifyProtocolError();

@@ -63,9 +63,17 @@ QByteArray CryptoCore::generateChallenge()
 	}
 
 	// generate a random challenge
-	BN_rand( challengeBigNum, ChallengeSize * 8, 0, 0 );
-	QByteArray chall( BN_num_bytes( challengeBigNum ), 0 );
-	BN_bn2bin( challengeBigNum, reinterpret_cast<unsigned char *>( chall.data() ) );
+	// bn2binpad vers un tampon de taille FIXE : sinon un MSB nul (~1/256) donnait
+	// un BN_num_bytes() < ChallengeSize, un challenge trop court, et un rejet
+	// « challenge.size() != ChallengeSize » côté pair (échec d'auth intermittent).
+	QByteArray chall( ChallengeSize, 0 );
+	if( BN_rand( challengeBigNum, ChallengeSize * 8, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY ) != 1 ||
+		BN_bn2binpad( challengeBigNum, reinterpret_cast<unsigned char *>( chall.data() ), ChallengeSize ) < 0 )
+	{
+		vCritical() << "BN_rand() failed";
+		BN_free( challengeBigNum );
+		return QByteArray();
+	}
 	BN_free( challengeBigNum );
 
 	return chall;

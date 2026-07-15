@@ -244,25 +244,34 @@ NetworkObjectList NetworkObjectDirectory::queryParents( const NetworkObject& chi
 		update();
 	}
 
-	if( child.type() == NetworkObject::Type::Root )
+	// Remontée itérative avec borne de profondeur : une relation parent/enfant
+	// cyclique (données d'annuaire malformées) provoquait une récursion infinie
+	// (débordement de pile). L'ordre reste racine→parent immédiat.
+	NetworkObjectList parents;
+	auto current = child;
+	for( int depth = 0; current.type() != NetworkObject::Type::Root && depth < 64; ++depth )
 	{
-		return {};
-	}
-
-	for( auto it = m_objects.constBegin(); it != m_objects.constEnd(); ++it )
-	{
-		const auto& objectList = it.value();
-
-		for( const auto& object : objectList )
+		bool found = false;
+		for( auto it = m_objects.constBegin(); it != m_objects.constEnd() && found == false; ++it )
 		{
-			if( object.uid() == child.parentUid() )
+			for( const auto& object : it.value() )
 			{
-				return queryParents( object ) + NetworkObjectList( { object } );
+				if( object.uid() == current.parentUid() )
+				{
+					parents.prepend( object );
+					current = object;
+					found = true;
+					break;
+				}
 			}
+		}
+		if( found == false )
+		{
+			break;
 		}
 	}
 
-	return {};
+	return parents;
 }
 
 
@@ -409,7 +418,11 @@ void NetworkObjectDirectory::propagateChildObjectChange(NetworkObject::ModelId o
 
 		m_changedObjectIds.append(objectId);
 
-		propagateChildObjectChange(parentId(objectId), depth+1);
+		// Borne de profondeur : une chaîne parentId() cyclique récursait sans fin.
+		if (depth < 64)
+		{
+			propagateChildObjectChange(parentId(objectId), depth+1);
+		}
 
 		if (depth == 0)
 		{

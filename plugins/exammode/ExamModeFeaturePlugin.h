@@ -24,8 +24,10 @@
 
 #pragma once
 
+#include <QJsonObject>
 #include <QStringList>
 
+#include "ExamModeProfile.h"
 #include "FeatureProviderInterface.h"
 
 class QTimer;
@@ -53,6 +55,16 @@ public:
 		BlockedApps,	// QStringList : noms d'exécutables interdits
 		Sites,			// QStringList : domaines
 		SitesMode,		// QString : "block" | "allow"
+		LeaseSeconds,	// int : durée du bail avant levée automatique des restrictions
+		BlockedAppsWindows,
+		BlockedAppsLinux,
+		BlockedAppsMacos,
+		ProcessRules,
+		UrlRules,
+		UrlDefaultAction,
+		ProfileId,
+		ProfileRevision,
+		ProfileDigest,
 	};
 	Q_ENUM(Argument)
 
@@ -66,7 +78,7 @@ public:
 
 	QVersionNumber version() const override
 	{
-		return QVersionNumber( 1, 0 );
+		return QVersionNumber( 1, 2 );
 	}
 
 	QString name() const override
@@ -110,39 +122,48 @@ private:
 		StopExam,
 	};
 
-	void startEnforcement( const QStringList& blockedApps, const QStringList& sites, const QString& sitesMode );
+	bool startEnforcement( const ExamModeProfile::ProcessPolicy& processPolicy, const QStringList& sites,
+						   const QList<ExamModeProfile::UrlRule>& urlRules, const QString& sitesMode,
+						   const QString& defaultUrlAction, int leaseSeconds, const QString& profileId,
+						   qint64 profileRevision, const QString& expectedDigest );
 	void stopEnforcement();
 	void enforceTick();				// termine périodiquement les processus interdits
 	void killApplication( const QString& executable ) const;
 	// Filtrage des sites. Windows : PAC + politiques proxy navigateur + DoH off
 	// (liste noire OU blanche, robuste au contournement DoH). Linux : fichier
 	// hosts (liste noire seulement ; « allow » averti).
-	void applySiteFiltering( const QStringList& sites, const QString& mode );
+	bool applySiteFiltering( const QStringList& sites, const QString& mode );
 	void removeSiteFiltering();
-	void applyHostsBlocking( const QStringList& sites );
+	bool applyHostsBlocking( const QStringList& sites );
 	void revertHostsBlocking();
-	void removeHostsSection();		// retire notre section du fichier hosts (sans garde)
+	bool removeHostsSection();		// retire notre section du fichier hosts (sans garde)
 	void flushDnsCache() const;		// purge le cache DNS résolveur pour un effet immédiat
 	static QString hostsFilePath();
-	static QString hostsSignature( const QStringList& sites, const QString& mode );
 #if defined(Q_OS_WIN)
-	void applyWindowsSiteFiltering( const QStringList& sites, const QString& mode );
+	bool applyWindowsSiteFiltering( const QStringList& sites, const QString& mode );
 	void removeWindowsSiteFiltering();
-	void writePacFile( const QStringList& sites, const QString& mode );
+	bool writePacFile();
+	void cleanupLegacyWindowsState();
 	static QString pacFilePath();
-	static QString siteFilterMarkerFile();
-	static void regSet( const QString& key, const QString& name, const QString& type, const QString& data );
-	static void regDelete( const QString& key, const QString& name );
+	static QString siteFilterStateFile();
+	static QString legacySiteFilterMarkerFile();
+	static QString legacyLaunchPreventionStateFile();
+	static bool regSet( const QString& key, const QString& name, const QString& type, const QString& data );
+	static bool regDelete( const QString& key, const QString& name );
+	static QJsonObject regRead( const QString& key, const QString& name );
+	static bool regRestore( const QString& key, const QString& name, const QJsonObject& previous,
+						const QJsonObject& expected = {} );
 #endif
 
 	// Empêchement du LANCEMENT des logiciels interdits (Windows : Image File
 	// Execution Options). Le kill périodique reste en complément (instances déjà
 	// ouvertes). Sous Linux : sans effet (on s'appuie sur le kill).
-	void applyLaunchPrevention( const QStringList& apps );
+	bool applyLaunchPrevention( const QStringList& apps );
 	void removeLaunchPrevention();
 	void cleanupStaleLaunchPrevention();		// au démarrage : retire un blocage résiduel (crash)
 	static QString windowsImageName( const QString& executable );
 	static QString launchPreventionStateFile();
+	static bool isEndpointComponent();
 
 	const Feature m_examModeFeature;
 	const FeatureList m_features;
@@ -151,11 +172,19 @@ private:
 	QTimer* m_watchdog{nullptr};	// lève tout si le portail cesse de ré-appliquer (fail-safe)
 	bool m_active{false};
 	QStringList m_blockedApps{};
+	QStringList m_launchPreventedApps{};
 	QStringList m_sites{};
+	QList<ExamModeProfile::UrlRule> m_urlRules{};
 	QString m_sitesMode{QStringLiteral("block")};
+	ExamModeProfile::RuleAction m_defaultUrlAction{ExamModeProfile::RuleAction::Allow};
+	bool m_hasStructuredUrlRules{false};
+	QString m_profileId{QStringLiteral("legacy")};
+	qint64 m_profileRevision{0};
+	QString m_profileDigest{};
+	int m_leaseSeconds{300};
 	bool m_hostsModified{false};
-	QString m_hostsSignature{};		// évite de réécrire hosts si sites+mode inchangés
-	QStringList m_preventedApps{};	// exécutables sous blocage de lancement (IFEO)
+	bool m_siteFilteringActive{false};
+	QString m_hostsSignature{};		// évite de réappliquer le filtrage réseau si la politique est inchangée
 	QString m_appsSignature{};		// évite de réappliquer IFEO si la liste est inchangée
 
 	// délimiteurs de notre section dans le fichier hosts (retrait propre au stop)

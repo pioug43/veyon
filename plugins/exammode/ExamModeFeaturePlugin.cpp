@@ -25,10 +25,16 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
+#include <QSaveFile>
 #include <QTimer>
 
 #include "ExamModeFeaturePlugin.h"
+#include "ExamModeProfile.h"
 #include "FeatureMessage.h"
 #include "VeyonCore.h"
 #include "VeyonServerInterface.h"
@@ -37,7 +43,45 @@
 static constexpr int EnforceIntervalMs = 4000;
 // fail-safe : le portail ré-applique le profil chaque minute ; sans re-push
 // pendant ce délai, on lève automatiquement toutes les restrictions.
-static constexpr int WatchdogMs = 5 * 60 * 1000;
+static constexpr int DefaultLeaseSeconds = 5 * 60;
+static constexpr int MinimumLeaseSeconds = 60;
+static constexpr int MaximumLeaseSeconds = 60 * 60;
+
+namespace
+{
+
+#if defined(Q_OS_WIN)
+bool writeJsonFile( const QString& path, const QJsonObject& object )
+{
+	QDir().mkpath( QFileInfo( path ).absolutePath() );
+	QSaveFile file( path );
+	if( file.open( QIODevice::WriteOnly ) == false )
+	{
+		return false;
+	}
+	if( file.write( QJsonDocument( object ).toJson( QJsonDocument::Compact ) ) < 0 )
+	{
+		file.cancelWriting();
+		return false;
+	}
+	return file.commit();
+}
+
+
+QJsonObject readJsonFile( const QString& path )
+{
+	QFile file( path );
+	if( file.open( QIODevice::ReadOnly ) == false )
+	{
+		return {};
+	}
+	QJsonParseError error;
+	const auto document = QJsonDocument::fromJson( file.readAll(), &error );
+	return error.error == QJsonParseError::NoError && document.isObject() ? document.object() : QJsonObject{};
+}
+#endif
+
+}
 
 
 ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
@@ -57,16 +101,18 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 	// encore actif sera ré-appliqué par le portail (re-push chaque minute).
 	// Nettoyage de sûreté au démarrage des composants du POSTE (Service au boot,
 	// Server à l'ouverture de session) — jamais sur le Master (poste enseignant).
-	if( VeyonCore::component() == VeyonCore::Component::Service ||
-		VeyonCore::component() == VeyonCore::Component::Server )
+	if( isEndpointComponent() )
 	{
-		removeHostsSection();
+		if( removeHostsSection() )
+		{
+			flushDnsCache();
+		}
 		cleanupStaleLaunchPrevention();
 #if defined(Q_OS_WIN)
-		// filtrage sites résiduel (politiques proxy/DoH) laissé par un crash
-		if( QFile::exists( siteFilterMarkerFile() ) )
+		cleanupLegacyWindowsState();
+		if( QFile::exists( siteFilterStateFile() ) )
 		{
-			vInfo() << "ExamMode: nettoyage d'un filtrage de sites résiduel";
+			vInfo() << "ExamMode: restauration d'un filtrage de sites résiduel";
 			removeWindowsSiteFiltering();
 		}
 #endif
@@ -77,9 +123,10 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 
 ExamModeFeaturePlugin::~ExamModeFeaturePlugin()
 {
-	// filet de sécurité : ne jamais laisser de restriction derrière soi
-	removeSiteFiltering();
-	removeLaunchPrevention();
+	if( isEndpointComponent() && m_active )
+	{
+		stopEnforcement();
+	}
 }
 
 
@@ -99,11 +146,32 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 		const auto sites = arguments.value( argToString( Argument::Sites ) ).toStringList();
 		const auto sitesMode = arguments.value( argToString( Argument::SitesMode ),
 												QStringLiteral("block") ).toString();
+		const auto leaseSeconds = arguments.value( argToString( Argument::LeaseSeconds ),
+													DefaultLeaseSeconds ).toInt();
+		const auto windowsApps = arguments.value( argToString( Argument::BlockedAppsWindows ) ).toStringList();
+		const auto linuxApps = arguments.value( argToString( Argument::BlockedAppsLinux ) ).toStringList();
+		const auto macosApps = arguments.value( argToString( Argument::BlockedAppsMacos ) ).toStringList();
+		const auto processRules = arguments.value( argToString( Argument::ProcessRules ) ).toList();
+		const auto urlRules = arguments.value( argToString( Argument::UrlRules ) ).toList();
+		const auto urlDefaultAction = arguments.value( argToString( Argument::UrlDefaultAction ) ).toString();
+		const auto profileId = arguments.value( argToString( Argument::ProfileId ), QStringLiteral("legacy") ).toString();
+		const auto profileRevision = arguments.value( argToString( Argument::ProfileRevision ) ).toLongLong();
+		const auto profileDigest = arguments.value( argToString( Argument::ProfileDigest ) ).toString();
 
 		sendFeatureMessage( FeatureMessage{ featureUid, FeatureCommand::StartExam }
 							.addArgument( Argument::BlockedApps, apps )
 							.addArgument( Argument::Sites, sites )
-							.addArgument( Argument::SitesMode, sitesMode ),
+							.addArgument( Argument::SitesMode, sitesMode )
+							.addArgument( Argument::LeaseSeconds, leaseSeconds )
+							.addArgument( Argument::BlockedAppsWindows, windowsApps )
+							.addArgument( Argument::BlockedAppsLinux, linuxApps )
+							.addArgument( Argument::BlockedAppsMacos, macosApps )
+							.addArgument( Argument::ProcessRules, processRules )
+							.addArgument( Argument::UrlRules, urlRules )
+							.addArgument( Argument::UrlDefaultAction, urlDefaultAction )
+							.addArgument( Argument::ProfileId, profileId )
+							.addArgument( Argument::ProfileRevision, profileRevision )
+							.addArgument( Argument::ProfileDigest, profileDigest ),
 							computerControlInterfaces );
 		return true;
 	}
@@ -137,10 +205,51 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 	switch( message.command<FeatureCommand>() )
 	{
 	case FeatureCommand::StartExam:
-		startEnforcement( message.argument( Argument::BlockedApps ).toStringList(),
-						  message.argument( Argument::Sites ).toStringList(),
-						  message.argument( Argument::SitesMode ).toString() );
-		return true;
+	{
+		auto applications = message.argument( Argument::BlockedApps ).toStringList();
+		QString platform;
+#if defined(Q_OS_WIN)
+		platform = QStringLiteral("windows");
+		applications.append( message.argument( Argument::BlockedAppsWindows ).toStringList() );
+#elif defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+		platform = QStringLiteral("macos");
+		applications.append( message.argument( Argument::BlockedAppsMacos ).toStringList() );
+#else
+		platform = QStringLiteral("linux");
+		applications.append( message.argument( Argument::BlockedAppsLinux ).toStringList() );
+#endif
+		QVariantList processRules;
+		for( const auto& application : applications )
+		{
+			processRules.append( QVariantMap{
+				{ QStringLiteral("active"), true }, { QStringLiteral("os"), QStringLiteral("all") },
+				{ QStringLiteral("executable"), application }, { QStringLiteral("action"), QStringLiteral("block") },
+				{ QStringLiteral("strongKill"), true },
+			} );
+		}
+		processRules.append( message.argument( Argument::ProcessRules ).toList() );
+		QStringList rejectedProcesses;
+		const auto processPolicy = ExamModeProfile::resolveProcessRules( processRules, platform, &rejectedProcesses );
+		QStringList rejectedUrls;
+		const auto urlRules = ExamModeProfile::normalizeUrlRules(
+			message.argument( Argument::UrlRules ).toList(), &rejectedUrls );
+		if( rejectedProcesses.isEmpty() == false )
+		{
+			vWarning() << "ExamMode:" << rejectedProcesses.size() << "regle(s) processus invalide(s) ignoree(s)";
+		}
+		if( rejectedUrls.isEmpty() == false )
+		{
+			vWarning() << "ExamMode:" << rejectedUrls.size() << "regle(s) URL invalide(s) ignoree(s)";
+		}
+		return startEnforcement( processPolicy, message.argument( Argument::Sites ).toStringList(), urlRules,
+			message.argument( Argument::SitesMode ).toString(),
+			message.argument( Argument::UrlDefaultAction ).toString(),
+			message.hasArgument( Argument::LeaseSeconds ) ?
+				message.argument( Argument::LeaseSeconds ).toInt() : DefaultLeaseSeconds,
+			message.argument( Argument::ProfileId ).toString(),
+			message.argument( Argument::ProfileRevision ).toLongLong(),
+			message.argument( Argument::ProfileDigest ).toString() );
+	}
 
 	case FeatureCommand::StopExam:
 		stopEnforcement();
@@ -166,25 +275,106 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonWorkerInterface& worker, 
 
 
 
-void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, const QStringList& sites,
-											  const QString& sitesMode )
+bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPolicy& processPolicy,
+											  const QStringList& sites, const QList<ExamModeProfile::UrlRule>& urlRules,
+											  const QString& sitesMode, const QString& defaultUrlAction, int leaseSeconds,
+											  const QString& profileId, qint64 profileRevision, const QString& expectedDigest )
 {
 	const bool wasActive = m_active;
-	m_blockedApps = blockedApps;
-	m_sites = sites;
-	m_sitesMode = sitesMode.isEmpty() ? QStringLiteral("block") : sitesMode;
+	ExamModeProfile::ProcessPolicy normalizedProcessPolicy{
+		ExamModeProfile::normalizeApplications( processPolicy.terminateApplications ),
+		ExamModeProfile::normalizeApplications( processPolicy.preventLaunchApplications ),
+	};
+	QStringList rejectedSites;
+	const auto normalizedSites = ExamModeProfile::normalizeDomains( sites, &rejectedSites );
+	bool validMode = false;
+	const auto normalizedSitesMode = ExamModeProfile::siteModeName(
+		ExamModeProfile::siteModeFromString( sitesMode, &validMode ) );
+	const auto normalizedLeaseSeconds = qBound( MinimumLeaseSeconds,
+		leaseSeconds > 0 ? leaseSeconds : DefaultLeaseSeconds, MaximumLeaseSeconds );
+	auto effectiveUrlRules = urlRules;
+	const auto legacyUrlAction = normalizedSitesMode == QStringLiteral("allow") ?
+		ExamModeProfile::RuleAction::Allow : ExamModeProfile::RuleAction::Block;
+	for( const auto& site : normalizedSites )
+	{
+		effectiveUrlRules.append( { legacyUrlAction, site, false } );
+	}
+	auto effectiveDefaultAction = normalizedSitesMode == QStringLiteral("allow") ?
+		ExamModeProfile::RuleAction::Block : ExamModeProfile::RuleAction::Allow;
+	const auto defaultActionName = defaultUrlAction.trimmed().toLower();
+	if( defaultActionName == QStringLiteral("allow") )
+	{
+		effectiveDefaultAction = ExamModeProfile::RuleAction::Allow;
+	}
+	else if( defaultActionName == QStringLiteral("block") )
+	{
+		effectiveDefaultAction = ExamModeProfile::RuleAction::Block;
+	}
+	const auto normalizedProfileId = profileId.trimmed().isEmpty() ? QStringLiteral("legacy") : profileId.trimmed();
+	const auto digest = ExamModeProfile::profileDigest( normalizedProfileId, profileRevision,
+		normalizedProcessPolicy, effectiveUrlRules, effectiveDefaultAction, normalizedLeaseSeconds );
+	if( validMode == false )
+	{
+		vWarning() << "ExamMode: mode de filtrage invalide" << sitesMode << "— utilisation de block";
+	}
+	if( rejectedSites.isEmpty() == false )
+	{
+		vWarning() << "ExamMode:" << rejectedSites.size() << "site(s) invalide(s) ignoré(s)" << rejectedSites;
+	}
+	if( normalizedProfileId.size() > 128 || normalizedProfileId.contains( QLatin1Char('\r') ) ||
+		normalizedProfileId.contains( QLatin1Char('\n') ) || profileRevision < 0 )
+	{
+		vWarning() << "ExamMode: identite ou revision de profil invalide";
+		return false;
+	}
+	if( normalizedProfileId == m_profileId && profileRevision < m_profileRevision )
+	{
+		vWarning() << "ExamMode: revision de profil obsolete refusee" << profileRevision << "<" << m_profileRevision;
+		return false;
+	}
+	const bool managedRevision = normalizedProfileId != QStringLiteral("legacy") ||
+		profileRevision > 0 || expectedDigest.trimmed().isEmpty() == false;
+	if( managedRevision && normalizedProfileId == m_profileId && profileRevision == m_profileRevision &&
+		m_profileDigest.isEmpty() == false && digest != m_profileDigest )
+	{
+		vWarning() << "ExamMode: contenu different pour une revision deja appliquee";
+		return false;
+	}
+	if( expectedDigest.trimmed().isEmpty() == false &&
+		digest.compare( expectedDigest.trimmed(), Qt::CaseInsensitive ) != 0 )
+	{
+		vWarning() << "ExamMode: empreinte du profil incorrecte; profil refuse";
+		return false;
+	}
+	m_blockedApps = normalizedProcessPolicy.terminateApplications;
+	m_launchPreventedApps = normalizedProcessPolicy.preventLaunchApplications;
+	m_sites = normalizedSites;
+	m_urlRules = effectiveUrlRules;
+	m_sitesMode = normalizedSitesMode;
+	m_defaultUrlAction = effectiveDefaultAction;
+	m_hasStructuredUrlRules = urlRules.isEmpty() == false;
+	m_leaseSeconds = normalizedLeaseSeconds;
+	m_profileId = normalizedProfileId;
+	m_profileRevision = profileRevision;
+	m_profileDigest = digest;
 	m_active = true;
+	vInfo() << "ExamMode: profil" << m_profileId << "revision" << m_profileRevision
+		<< "empreinte" << m_profileDigest.left( 12 );
 
 	// Le portail ré-applique le profil chaque minute (couverture des postes
 	// connectés après coup) : on ne réécrit le fichier hosts QUE si la liste des
 	// sites ou le mode a changé, pour éviter une réécriture/flush DNS inutile.
-	const auto signature = hostsSignature( m_sites, m_sitesMode );
+	const auto signature = m_profileDigest + QLatin1Char('\n') + hostsSignature( m_sites, m_sitesMode );
 	if( signature != m_hostsSignature )
 	{
 		vInfo() << "ExamMode: enforcement -" << m_blockedApps.size() << "app(s),"
 				<< m_sites.size() << "site(s), mode" << m_sitesMode;
-		applySiteFiltering( m_sites, m_sitesMode );
-		m_hostsSignature = signature;
+		m_siteFilteringActive = applySiteFiltering( m_sites, m_sitesMode );
+		m_hostsSignature = m_siteFilteringActive ? signature : QString{};
+		if( m_siteFilteringActive == false && ( m_sites.isEmpty() == false || m_sitesMode == QStringLiteral("allow") ) )
+		{
+			vWarning() << "ExamMode: filtrage réseau non appliqué; nouvelle tentative au prochain renouvellement";
+		}
 	}
 	else if( wasActive == false )
 	{
@@ -192,11 +382,19 @@ void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, co
 	}
 
 	// Empêche le lancement des logiciels interdits (IFEO Windows) si la liste change.
-	const auto appsSig = m_blockedApps.join( QLatin1Char('\n') );
+	const auto appsSig = m_blockedApps.join( QLatin1Char('\n') ) + QStringLiteral("\n--prevent--\n") +
+		m_launchPreventedApps.join( QLatin1Char('\n') );
 	if( appsSig != m_appsSignature )
 	{
-		applyLaunchPrevention( m_blockedApps );
-		m_appsSignature = appsSig;
+		if( applyLaunchPrevention( m_launchPreventedApps ) == false )
+		{
+			vWarning() << "ExamMode: le blocage au lancement n'a pas pu être appliqué complètement";
+			m_appsSignature.clear();
+		}
+		else
+		{
+			m_appsSignature = appsSig;
+		}
 	}
 
 	if( m_timer == nullptr )
@@ -220,9 +418,10 @@ void ExamModeFeaturePlugin::startEnforcement( const QStringList& blockedApps, co
 			stopEnforcement();
 		} );
 	}
-	m_watchdog->start( WatchdogMs );
+	m_watchdog->start( m_leaseSeconds * 1000 );
 
 	enforceTick();		// passe immédiate sur les processus interdits
+	return true;
 }
 
 
@@ -242,6 +441,13 @@ void ExamModeFeaturePlugin::stopEnforcement()
 	}
 	removeLaunchPrevention();
 	removeSiteFiltering();
+	m_blockedApps.clear();
+	m_launchPreventedApps.clear();
+	m_sites.clear();
+	m_urlRules.clear();
+	m_hasStructuredUrlRules = false;
+	m_defaultUrlAction = ExamModeProfile::RuleAction::Allow;
+	m_siteFilteringActive = false;
 	vInfo() << "ExamMode: enforcement stopped";
 }
 
@@ -270,11 +476,12 @@ void ExamModeFeaturePlugin::killApplication( const QString& executable ) const
 	}
 
 #if defined(Q_OS_WIN)
-	// /F force, /IM par nom d'image ; on garantit le suffixe .exe
-	auto image = name;
-	if( image.endsWith( QStringLiteral(".exe"), Qt::CaseInsensitive ) == false )
+	// /F force, /IM par nom d'image ; les profils Omnissa peuvent contenir un chemin complet.
+	const auto image = windowsImageName( name );
+	if( image.isEmpty() )
 	{
-		image += QStringLiteral(".exe");
+		vWarning() << "ExamMode: nom d'application Windows invalide ignoré" << name;
+		return;
 	}
 	QProcess::startDetached( QStringLiteral("taskkill"), { QStringLiteral("/F"), QStringLiteral("/IM"), image } );
 #else
@@ -318,13 +525,27 @@ QString ExamModeFeaturePlugin::hostsSignature( const QStringList& sites, const Q
  * Applique le filtrage des sites. Windows : PAC (liste noire OU blanche) + DoH
  * désactivé, robuste au contournement. Linux : fichier hosts (liste noire).
  */
-void ExamModeFeaturePlugin::applySiteFiltering( const QStringList& sites, const QString& mode )
+bool ExamModeFeaturePlugin::applySiteFiltering( const QStringList& sites, const QString& mode )
 {
 #if defined(Q_OS_WIN)
-	applyWindowsSiteFiltering( sites, mode );
+	return applyWindowsSiteFiltering( sites, mode );
 #else
-	Q_UNUSED(mode)
-	applyHostsBlocking( sites );
+	if( m_hasStructuredUrlRules )
+	{
+		vWarning() << "ExamMode: les regles URL ordonnees/regex necessitent le backend PAC Windows; profil refuse";
+		removeHostsSection();
+		flushDnsCache();
+		return false;
+	}
+	if( mode == QStringLiteral("allow") )
+	{
+		vWarning() << "ExamMode: la liste blanche nécessite le backend PAC Windows; "
+					   "le profil réseau est refusé sur cette plateforme";
+		removeHostsSection();
+		flushDnsCache();
+		return false;
+	}
+	return applyHostsBlocking( sites );
 #endif
 }
 
@@ -341,7 +562,7 @@ void ExamModeFeaturePlugin::removeSiteFiltering()
 
 
 
-void ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
+bool ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
 {
 	// Le fichier hosts ne permet qu'une liste NOIRE (rediriger un domaine vers
 	// 127.0.0.1). Le mode "allow" (liste blanche) nécessiterait un proxy/pare-feu :
@@ -352,45 +573,34 @@ void ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
 				   << "non supporté via hosts (liste blanche) — sites non filtrés";
 		removeHostsSection();
 		flushDnsCache();
-		return;
+		return false;
 	}
 
 	removeHostsSection();		// repart d'un fichier propre (idempotent)
 
 	// Aucun site à bloquer : on s'est déjà assuré qu'il ne reste pas de section.
-	const auto cleaned = [&sites] {
-		QStringList out;
-		for( const auto& s : sites )
-		{
-			const auto h = s.trimmed();
-			if( h.isEmpty() == false )
-			{
-				out.append( h );
-			}
-		}
-		return out;
-	}();
-	if( cleaned.isEmpty() )
+	if( sites.isEmpty() )
 	{
 		flushDnsCache();
-		return;
+		return true;
 	}
 
 	QFile file( hostsFilePath() );
 	if( file.open( QIODevice::ReadWrite | QIODevice::Text ) == false )
 	{
 		vWarning() << "ExamMode: impossible d'ouvrir le fichier hosts" << hostsFilePath();
-		return;
+		return false;
 	}
 
 	QByteArray content = file.readAll();
+	const auto permissions = file.permissions();
 	if( content.isEmpty() == false && content.endsWith( '\n' ) == false )
 	{
 		content.append( '\n' );
 	}
 
 	content.append( QByteArrayLiteral("\n") ).append( HostsMarkerBegin ).append( '\n' );
-	for( const auto& host : cleaned )
+	for( const auto& host : sites )
 	{
 		// Redirige le domaine ET son sous-domaine www vers l'adresse de rebouclage.
 		const auto line = QStringLiteral("127.0.0.1\t%1\n127.0.0.1\twww.%1\n::1\t%1\n::1\twww.%1\n").arg( host );
@@ -398,42 +608,49 @@ void ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
 	}
 	content.append( HostsMarkerEnd ).append( '\n' );
 
-	file.resize( 0 );
-	file.write( content );
 	file.close();
+
+	QSaveFile output( hostsFilePath() );
+	if( output.open( QIODevice::WriteOnly | QIODevice::Text ) == false ||
+		output.setPermissions( permissions ) == false || output.write( content ) != content.size() ||
+		output.commit() == false )
+	{
+		vWarning() << "ExamMode: échec de l'écriture atomique de" << hostsFilePath();
+		return false;
+	}
 	m_hostsModified = true;
 	flushDnsCache();		// effet immédiat malgré les caches DNS/navigateur
+	return true;
 }
 
 
 
 void ExamModeFeaturePlugin::revertHostsBlocking()
 {
-	if( m_hostsModified == false )
+	if( removeHostsSection() )
 	{
-		return;
+		flushDnsCache();
 	}
-	removeHostsSection();
-	flushDnsCache();
 	m_hostsModified = false;
 }
 
 
 
 /** Retire notre section délimitée du fichier hosts. Sûr même sans section présente. */
-void ExamModeFeaturePlugin::removeHostsSection()
+bool ExamModeFeaturePlugin::removeHostsSection()
 {
 	QFile file( hostsFilePath() );
 	if( file.open( QIODevice::ReadWrite | QIODevice::Text ) == false )
 	{
-		return;
+		return false;
 	}
 
 	const auto raw = QString::fromUtf8( file.readAll() );
+	const auto permissions = file.permissions();
 	if( raw.contains( QLatin1String(HostsMarkerBegin) ) == false )
 	{
 		file.close();
-		return;		// rien à faire
+		return false;		// rien à faire
 	}
 
 	const auto lines = raw.split( QLatin1Char('\n') );
@@ -461,9 +678,17 @@ void ExamModeFeaturePlugin::removeHostsSection()
 		rebuilt.chop( 1 );
 	}
 
-	file.resize( 0 );
-	file.write( rebuilt.toUtf8() );
 	file.close();
+	QSaveFile output( hostsFilePath() );
+	const auto content = rebuilt.toUtf8();
+	if( output.open( QIODevice::WriteOnly | QIODevice::Text ) == false ||
+		output.setPermissions( permissions ) == false || output.write( content ) != content.size() ||
+		output.commit() == false )
+	{
+		vWarning() << "ExamMode: impossible de nettoyer" << hostsFilePath();
+		return false;
+	}
+	return true;
 }
 
 
@@ -473,6 +698,9 @@ void ExamModeFeaturePlugin::flushDnsCache() const
 {
 #if defined(Q_OS_WIN)
 	QProcess::startDetached( QStringLiteral("ipconfig"), { QStringLiteral("/flushdns") } );
+#elif defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+	QProcess::startDetached( QStringLiteral("dscacheutil"), { QStringLiteral("-flushcache") } );
+	QProcess::startDetached( QStringLiteral("killall"), { QStringLiteral("-HUP"), QStringLiteral("mDNSResponder") } );
 #else
 	// systemd-resolved (la plupart des VDI Linux récents) ; échec silencieux sinon.
 	QProcess::startDetached( QStringLiteral("resolvectl"), { QStringLiteral("flush-caches") } );
@@ -481,10 +709,24 @@ void ExamModeFeaturePlugin::flushDnsCache() const
 
 
 
+bool ExamModeFeaturePlugin::isEndpointComponent()
+{
+	return VeyonCore::component() == VeyonCore::Component::Service ||
+		   VeyonCore::component() == VeyonCore::Component::Server;
+}
+
+
+
 /** Nom d'image Windows (basename + suffixe .exe) pour une clé IFEO. */
 QString ExamModeFeaturePlugin::windowsImageName( const QString& executable )
 {
 	auto image = executable.trimmed().section( QLatin1Char('/'), -1 ).section( QLatin1Char('\\'), -1 );
+	static const QRegularExpression InvalidImageCharacters( QStringLiteral(R"([<>:"/\\|?*\x00-\x1f])") );
+	if( image.isEmpty() || image == QStringLiteral(".") || image == QStringLiteral("..") ||
+		InvalidImageCharacters.match( image ).hasMatch() )
+	{
+		return {};
+	}
 	if( image.isEmpty() == false && image.endsWith( QStringLiteral(".exe"), Qt::CaseInsensitive ) == false )
 	{
 		image += QStringLiteral(".exe");
@@ -498,9 +740,9 @@ QString ExamModeFeaturePlugin::windowsImageName( const QString& executable )
 QString ExamModeFeaturePlugin::launchPreventionStateFile()
 {
 #if defined(Q_OS_WIN)
-	return QStringLiteral("C:/ProgramData/Veyon/exammode-blocked-apps.txt");
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-launch-state.json");
 #else
-	return QStringLiteral("/var/lib/veyon/exammode-blocked-apps.txt");
+	return QStringLiteral("/var/lib/veyon/exammode-launch-state.json");
 #endif
 }
 
@@ -513,12 +755,21 @@ QString ExamModeFeaturePlugin::launchPreventionStateFile()
  * pour pouvoir la nettoyer même après un crash (cf. cleanupStaleLaunchPrevention).
  * Sous Linux : sans effet (le kill périodique fait le travail).
  */
-void ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
+bool ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
 {
 #if defined(Q_OS_WIN)
-	removeLaunchPrevention();		// repart d'un état propre
+	removeLaunchPrevention();		// restaure d'abord l'état antérieur
+	if( QFile::exists( launchPreventionStateFile() ) )
+	{
+		vWarning() << "ExamMode: restauration IFEO précédente incomplète; nouveau blocage refusé";
+		return false;
+	}
+	if( apps.isEmpty() )
+	{
+		return true;
+	}
 
-	QStringList applied;
+	QJsonArray entries;
 	for( const auto& app : apps )
 	{
 		const auto image = windowsImageName( app );
@@ -528,27 +779,43 @@ void ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
 		}
 		const auto key = QStringLiteral(
 			"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%1" ).arg( image );
-		QProcess reg;
-		reg.start( QStringLiteral("reg"), { QStringLiteral("add"), key,
-			QStringLiteral("/v"), QStringLiteral("Debugger"),
-			QStringLiteral("/t"), QStringLiteral("REG_SZ"),
-			QStringLiteral("/d"), QStringLiteral("C:\\Windows\\System32\\systray.exe"),
-			QStringLiteral("/f") } );
-		reg.waitForFinished( 5000 );
-		applied.append( image );
+		entries.append( QJsonObject{
+			{ QStringLiteral("image"), image },
+			{ QStringLiteral("key"), key },
+			{ QStringLiteral("previous"), regRead( key, QStringLiteral("Debugger") ) },
+			{ QStringLiteral("expected"), QJsonObject{
+				{ QStringLiteral("exists"), true }, { QStringLiteral("type"), QStringLiteral("REG_SZ") },
+				{ QStringLiteral("data"), QStringLiteral("C:\\Windows\\System32\\systray.exe") },
+			} },
+		} );
 	}
-	m_preventedApps = applied;
-
-	// persiste la liste pour un nettoyage fiable même après un crash du service
-	QDir().mkpath( QFileInfo( launchPreventionStateFile() ).absolutePath() );
-	QFile state( launchPreventionStateFile() );
-	if( state.open( QIODevice::WriteOnly | QIODevice::Text ) )
+	if( entries.isEmpty() )
 	{
-		state.write( applied.join( QLatin1Char('\n') ).toUtf8() );
-		state.close();
+		return true;
 	}
+
+	if( writeJsonFile( launchPreventionStateFile(), QJsonObject{
+		{ QStringLiteral("version"), 2 }, { QStringLiteral("entries"), entries } } ) == false )
+	{
+		vWarning() << "ExamMode: impossible de sauvegarder l'état IFEO; blocage annulé";
+		return false;
+	}
+
+	bool success = true;
+	for( const auto& value : entries )
+	{
+		const auto entry = value.toObject();
+		success = regSet( entry[QStringLiteral("key")].toString(), QStringLiteral("Debugger"),
+			QStringLiteral("REG_SZ"), QStringLiteral("C:\\Windows\\System32\\systray.exe") ) && success;
+	}
+	if( success == false )
+	{
+		removeLaunchPrevention();
+	}
+	return success;
 #else
 	Q_UNUSED(apps)
+	return true;
 #endif
 }
 
@@ -558,17 +825,33 @@ void ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
 void ExamModeFeaturePlugin::removeLaunchPrevention()
 {
 #if defined(Q_OS_WIN)
-	for( const auto& image : m_preventedApps )
+	if( QFile::exists( launchPreventionStateFile() ) == false )
 	{
-		const auto key = QStringLiteral(
-			"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%1" ).arg( image );
-		QProcess reg;
-		reg.start( QStringLiteral("reg"), { QStringLiteral("delete"), key,
-			QStringLiteral("/v"), QStringLiteral("Debugger"), QStringLiteral("/f") } );
-		reg.waitForFinished( 5000 );
+		return;
 	}
-	m_preventedApps.clear();
-	QFile::remove( launchPreventionStateFile() );
+	const auto state = readJsonFile( launchPreventionStateFile() );
+	const auto entries = state[QStringLiteral("entries")].toArray();
+	if( entries.isEmpty() )
+	{
+		vWarning() << "ExamMode: état IFEO illisible; conservation du fichier pour diagnostic";
+		return;
+	}
+
+	bool success = true;
+	for( const auto& value : entries )
+	{
+		const auto entry = value.toObject();
+		success = regRestore( entry[QStringLiteral("key")].toString(), QStringLiteral("Debugger"),
+			entry[QStringLiteral("previous")].toObject(), entry[QStringLiteral("expected")].toObject() ) && success;
+	}
+	if( success )
+	{
+		QFile::remove( launchPreventionStateFile() );
+	}
+	else
+	{
+		vWarning() << "ExamMode: restauration IFEO incomplète; elle sera retentée au prochain démarrage";
+	}
 #endif
 }
 
@@ -578,22 +861,10 @@ void ExamModeFeaturePlugin::removeLaunchPrevention()
 void ExamModeFeaturePlugin::cleanupStaleLaunchPrevention()
 {
 #if defined(Q_OS_WIN)
-	QFile state( launchPreventionStateFile() );
-	if( state.open( QIODevice::ReadOnly | QIODevice::Text ) == false )
+	if( QFile::exists( launchPreventionStateFile() ) )
 	{
-		return;
-	}
-	m_preventedApps = QString::fromUtf8( state.readAll() )
-		.split( QLatin1Char('\n'), Qt::SkipEmptyParts );
-	state.close();
-	if( m_preventedApps.isEmpty() == false )
-	{
-		vInfo() << "ExamMode: nettoyage d'un blocage de lancement résiduel -" << m_preventedApps.size() << "app(s)";
+		vInfo() << "ExamMode: restauration d'un blocage de lancement résiduel";
 		removeLaunchPrevention();
-	}
-	else
-	{
-		QFile::remove( launchPreventionStateFile() );
 	}
 #endif
 }
@@ -603,75 +874,138 @@ void ExamModeFeaturePlugin::cleanupStaleLaunchPrevention()
 
 QString ExamModeFeaturePlugin::pacFilePath()
 {
-	return QStringLiteral("C:/ProgramData/Veyon/exam.pac");
+	return QStringLiteral("C:/ProgramData/Veyon/exammode.pac");
 }
 
 
 
-QString ExamModeFeaturePlugin::siteFilterMarkerFile()
+QString ExamModeFeaturePlugin::siteFilterStateFile()
+{
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-site-state.json");
+}
+
+
+
+/** Écrit un PAC : liste blanche (allow) ou liste noire (block), robuste au DoH. */
+QString ExamModeFeaturePlugin::legacySiteFilterMarkerFile()
 {
 	return QStringLiteral("C:/ProgramData/Veyon/exam-sitefilter.on");
 }
 
 
 
-/** Écrit un PAC : liste blanche (allow) ou liste noire (block), robuste au DoH. */
-void ExamModeFeaturePlugin::writePacFile( const QStringList& sites, const QString& mode )
+QString ExamModeFeaturePlugin::legacyLaunchPreventionStateFile()
 {
-	QStringList items;
-	for( const auto& s : sites )
-	{
-		const auto h = s.trimmed().toLower();
-		if( h.isEmpty() == false )
-		{
-			items.append( QStringLiteral("\"%1\"").arg( QString(h).replace( QLatin1Char('"'), QString() ) ) );
-		}
-	}
-	const bool allow = ( mode == QStringLiteral("allow") );
-	// site listé -> "PROXY 127.0.0.1:1" (mort = bloqué) ou "DIRECT" selon le mode
-	const auto listedResult = allow ? QStringLiteral("DIRECT") : QStringLiteral("PROXY 127.0.0.1:1");
-	const auto otherResult  = allow ? QStringLiteral("PROXY 127.0.0.1:1") : QStringLiteral("DIRECT");
-
-	const auto pac = QStringLiteral(
-		"function FindProxyForURL(url, host) {\n"
-		"  host = ('' + host).toLowerCase();\n"
-		"  if (host === 'localhost' || host === '127.0.0.1' || isPlainHostName(host)) return 'DIRECT';\n"
-		"  var list = [%1];\n"
-		"  var inList = false;\n"
-		"  for (var i = 0; i < list.length; i++) {\n"
-		"    var d = list[i];\n"
-		"    if (host === d || host === 'www.' + d || dnsDomainIs(host, '.' + d)) { inList = true; break; }\n"
-		"  }\n"
-		"  return inList ? '%2' : '%3';\n"
-		"}\n" ).arg( items.join( QStringLiteral(", ") ), listedResult, otherResult );
-
-	QDir().mkpath( QFileInfo( pacFilePath() ).absolutePath() );
-	QFile f( pacFilePath() );
-	if( f.open( QIODevice::WriteOnly | QIODevice::Text ) )
-	{
-		f.write( pac.toUtf8() );
-		f.close();
-	}
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-blocked-apps.txt");
 }
 
 
 
-/** reg add helper (échec silencieux). */
-void ExamModeFeaturePlugin::regSet( const QString& key, const QString& name, const QString& type, const QString& data )
+bool ExamModeFeaturePlugin::writePacFile()
+{
+	const auto pac = ExamModeProfile::buildPac( m_urlRules, m_defaultUrlAction );
+
+	QDir().mkpath( QFileInfo( pacFilePath() ).absolutePath() );
+	QSaveFile file( pacFilePath() );
+	if( file.open( QIODevice::WriteOnly | QIODevice::Text ) == false ||
+		file.write( pac ) != pac.size() || file.commit() == false )
+	{
+		vWarning() << "ExamMode: impossible d'écrire le fichier PAC" << pacFilePath();
+		return false;
+	}
+	return true;
+}
+
+
+
+bool ExamModeFeaturePlugin::regSet( const QString& key, const QString& name, const QString& type, const QString& data )
 {
 	QProcess p;
 	p.start( QStringLiteral("reg"), { QStringLiteral("add"), key, QStringLiteral("/v"), name,
 		QStringLiteral("/t"), type, QStringLiteral("/d"), data, QStringLiteral("/f") } );
-	p.waitForFinished( 5000 );
+	if( p.waitForStarted( 2000 ) == false || p.waitForFinished( 5000 ) == false ||
+		p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0 )
+	{
+		vWarning() << "ExamMode: échec reg add" << key << name << p.readAllStandardError();
+		return false;
+	}
+	return true;
 }
 
 
 
-void ExamModeFeaturePlugin::regDelete( const QString& key, const QString& name )
+bool ExamModeFeaturePlugin::regDelete( const QString& key, const QString& name )
 {
+	if( regRead( key, name )[QStringLiteral("exists")].toBool() == false )
+	{
+		return true;
+	}
 	QProcess p;
 	p.start( QStringLiteral("reg"), { QStringLiteral("delete"), key, QStringLiteral("/v"), name, QStringLiteral("/f") } );
-	p.waitForFinished( 5000 );
+	if( p.waitForStarted( 2000 ) == false || p.waitForFinished( 5000 ) == false ||
+		p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0 )
+	{
+		vWarning() << "ExamMode: échec reg delete" << key << name << p.readAllStandardError();
+		return false;
+	}
+	return true;
+}
+
+
+
+QJsonObject ExamModeFeaturePlugin::regRead( const QString& key, const QString& name )
+{
+	QProcess process;
+	process.start( QStringLiteral("reg"), { QStringLiteral("query"), key, QStringLiteral("/v"), name } );
+	if( process.waitForStarted( 2000 ) == false || process.waitForFinished( 5000 ) == false ||
+		process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 )
+	{
+		return QJsonObject{ { QStringLiteral("exists"), false } };
+	}
+
+	const auto expression = QRegularExpression(
+		QStringLiteral("^\\s*%1\\s+(REG_[A-Z0-9_]+)\\s+(.*)$").arg( QRegularExpression::escape( name ) ),
+		QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption );
+	const auto match = expression.match( QString::fromLocal8Bit( process.readAllStandardOutput() ) );
+	if( match.hasMatch() == false )
+	{
+		return QJsonObject{ { QStringLiteral("exists"), false } };
+	}
+	return QJsonObject{
+		{ QStringLiteral("exists"), true },
+		{ QStringLiteral("type"), match.captured( 1 ) },
+		{ QStringLiteral("data"), match.captured( 2 ).trimmed() },
+	};
+}
+
+
+
+bool ExamModeFeaturePlugin::regRestore( const QString& key, const QString& name, const QJsonObject& previous,
+										   const QJsonObject& expected )
+{
+	if( expected.isEmpty() == false )
+	{
+		const auto current = regRead( key, name );
+		const auto currentType = current[QStringLiteral("type")].toString();
+		const auto expectedType = expected[QStringLiteral("type")].toString();
+		const auto currentData = current[QStringLiteral("data")].toString();
+		const auto expectedData = expected[QStringLiteral("data")].toString();
+		const bool dataMatches = expectedType.compare( QStringLiteral("REG_DWORD"), Qt::CaseInsensitive ) == 0 ?
+			currentData.toULongLong( nullptr, 0 ) == expectedData.toULongLong( nullptr, 0 ) :
+			currentData == expectedData;
+		if( current[QStringLiteral("exists")].toBool() != expected[QStringLiteral("exists")].toBool() ||
+			currentType.compare( expectedType, Qt::CaseInsensitive ) != 0 || dataMatches == false )
+		{
+			vWarning() << "ExamMode: politique modifiée par un tiers, restauration ignorée" << key << name;
+			return true;
+		}
+	}
+	if( previous[QStringLiteral("exists")].toBool() )
+	{
+		return regSet( key, name, previous[QStringLiteral("type")].toString(),
+			previous[QStringLiteral("data")].toString() );
+	}
+	return regDelete( key, name );
 }
 
 
@@ -681,72 +1015,199 @@ void ExamModeFeaturePlugin::regDelete( const QString& key, const QString& name )
  * Firefox) via politiques HKLM + désactivation DoH (sinon le navigateur pourrait
  * résoudre hors du contrôle). Couvre liste noire ET blanche.
  */
-void ExamModeFeaturePlugin::applyWindowsSiteFiltering( const QStringList& sites, const QString& mode )
+bool ExamModeFeaturePlugin::applyWindowsSiteFiltering( const QStringList& sites, const QString& mode )
 {
-	removeWindowsSiteFiltering();		// état propre
-
-	if( sites.isEmpty() && mode != QStringLiteral("allow") )
+	removeWindowsSiteFiltering();		// restaure d'abord l'état précédent
+	if( QFile::exists( siteFilterStateFile() ) )
 	{
-		return;		// liste noire vide = rien à filtrer
+		vWarning() << "ExamMode: restauration précédente incomplète; nouveau filtrage refusé";
+		return false;
 	}
 
-	writePacFile( sites, mode );
-
-	// PAC en data: URL (Chrome/Edge restreignent file://) + fichier pour Firefox.
-	QFile f( pacFilePath() );
-	QByteArray pac;
-	if( f.open( QIODevice::ReadOnly ) ) { pac = f.readAll(); f.close(); }
+	if( m_urlRules.isEmpty() && m_defaultUrlAction == ExamModeProfile::RuleAction::Allow )
+	{
+		return true;		// liste noire vide = rien à filtrer
+	}
+	const auto pac = ExamModeProfile::buildPac( m_urlRules, m_defaultUrlAction );
 	const auto dataUrl = QStringLiteral("data:application/x-ns-proxy-autoconfig;base64,")
 		+ QString::fromLatin1( pac.toBase64() );
 	const auto fileUrl = QStringLiteral("file:///") + pacFilePath();
+
+	const QList<QPair<QString, QString>> policyValues = {
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"), QStringLiteral("ProxyMode") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"), QStringLiteral("ProxyPacUrl") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"), QStringLiteral("DnsOverHttpsMode") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"), QStringLiteral("ProxyMode") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"), QStringLiteral("ProxyPacUrl") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"), QStringLiteral("DnsOverHttpsMode") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Mode") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("AutoConfigURL") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Locked") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\DNSOverHTTPS"), QStringLiteral("Enabled") },
+	};
+
+	QJsonArray entries;
+	for( const auto& policy : policyValues )
+	{
+		QString type = QStringLiteral("REG_SZ");
+		QString data;
+		if( policy.second == QStringLiteral("ProxyMode") ) { data = QStringLiteral("pac_script"); }
+		else if( policy.second == QStringLiteral("ProxyPacUrl") ) { data = dataUrl; }
+		else if( policy.second == QStringLiteral("DnsOverHttpsMode") ) { data = QStringLiteral("off"); }
+		else if( policy.second == QStringLiteral("Mode") ) { data = QStringLiteral("autoConfig"); }
+		else if( policy.second == QStringLiteral("AutoConfigURL") ) { data = fileUrl; }
+		else if( policy.second == QStringLiteral("Locked") ) { type = QStringLiteral("REG_DWORD"); data = QStringLiteral("1"); }
+		else if( policy.second == QStringLiteral("Enabled") ) { type = QStringLiteral("REG_DWORD"); data = QStringLiteral("0"); }
+		entries.append( QJsonObject{
+			{ QStringLiteral("key"), policy.first }, { QStringLiteral("name"), policy.second },
+			{ QStringLiteral("previous"), regRead( policy.first, policy.second ) },
+			{ QStringLiteral("expected"), QJsonObject{
+				{ QStringLiteral("exists"), true }, { QStringLiteral("type"), type },
+				{ QStringLiteral("data"), data },
+			} },
+		} );
+	}
+
+	QByteArray previousPac;
+	QFile oldPac( pacFilePath() );
+	const bool previousPacExists = oldPac.open( QIODevice::ReadOnly );
+	if( previousPacExists )
+	{
+		previousPac = oldPac.readAll();
+	}
+	const QJsonObject state{
+		{ QStringLiteral("version"), 2 }, { QStringLiteral("entries"), entries },
+		{ QStringLiteral("pacExisted"), previousPacExists },
+		{ QStringLiteral("previousPac"), QString::fromLatin1( previousPac.toBase64() ) },
+	};
+	if( writeJsonFile( siteFilterStateFile(), state ) == false )
+	{
+		vWarning() << "ExamMode: impossible de sauvegarder les politiques navigateur";
+		return false;
+	}
+	if( writePacFile() == false )
+	{
+		removeWindowsSiteFiltering();
+		return false;
+	}
 
 	const QStringList chromiumKeys = {
 		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"),
 		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"),
 	};
+	bool success = true;
 	for( const auto& key : chromiumKeys )
 	{
-		regSet( key, QStringLiteral("ProxyMode"), QStringLiteral("REG_SZ"), QStringLiteral("pac_script") );
-		regSet( key, QStringLiteral("ProxyPacUrl"), QStringLiteral("REG_SZ"), dataUrl );
-		regSet( key, QStringLiteral("DnsOverHttpsMode"), QStringLiteral("REG_SZ"), QStringLiteral("off") );
+		success = regSet( key, QStringLiteral("ProxyMode"), QStringLiteral("REG_SZ"), QStringLiteral("pac_script") ) && success;
+		success = regSet( key, QStringLiteral("ProxyPacUrl"), QStringLiteral("REG_SZ"), dataUrl ) && success;
+		success = regSet( key, QStringLiteral("DnsOverHttpsMode"), QStringLiteral("REG_SZ"), QStringLiteral("off") ) && success;
 	}
 
 	// Firefox : proxy autoConfig + DoH off (via ADMX → registre)
-	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
-			QStringLiteral("Mode"), QStringLiteral("REG_SZ"), QStringLiteral("autoConfig") );
-	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
-			QStringLiteral("AutoConfigURL"), QStringLiteral("REG_SZ"), fileUrl );
-	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
-			QStringLiteral("Locked"), QStringLiteral("REG_DWORD"), QStringLiteral("1") );
-	regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\DNSOverHTTPS"),
-			QStringLiteral("Enabled"), QStringLiteral("REG_DWORD"), QStringLiteral("0") );
+	success = regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
+		QStringLiteral("Mode"), QStringLiteral("REG_SZ"), QStringLiteral("autoConfig") ) && success;
+	success = regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
+		QStringLiteral("AutoConfigURL"), QStringLiteral("REG_SZ"), fileUrl ) && success;
+	success = regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"),
+		QStringLiteral("Locked"), QStringLiteral("REG_DWORD"), QStringLiteral("1") ) && success;
+	success = regSet( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\DNSOverHTTPS"),
+		QStringLiteral("Enabled"), QStringLiteral("REG_DWORD"), QStringLiteral("0") ) && success;
 
-	// marqueur pour nettoyage anti-crash au démarrage
-	QFile marker( siteFilterMarkerFile() );
-	if( marker.open( QIODevice::WriteOnly ) ) { marker.write( "1" ); marker.close(); }
+	if( success == false )
+	{
+		removeWindowsSiteFiltering();
+	}
+	return success;
 }
 
 
 
 void ExamModeFeaturePlugin::removeWindowsSiteFiltering()
 {
-	const QStringList chromiumKeys = {
-		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"),
-		QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"),
-	};
-	for( const auto& key : chromiumKeys )
+	if( QFile::exists( siteFilterStateFile() ) == false )
 	{
-		regDelete( key, QStringLiteral("ProxyMode") );
-		regDelete( key, QStringLiteral("ProxyPacUrl") );
-		regDelete( key, QStringLiteral("DnsOverHttpsMode") );
+		return;
 	}
-	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Mode") );
-	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("AutoConfigURL") );
-	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Locked") );
-	regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\DNSOverHTTPS"), QStringLiteral("Enabled") );
+	const auto state = readJsonFile( siteFilterStateFile() );
+	const auto entries = state[QStringLiteral("entries")].toArray();
+	if( entries.isEmpty() )
+	{
+		vWarning() << "ExamMode: sauvegarde des politiques illisible; restauration différée";
+		return;
+	}
 
-	QFile::remove( pacFilePath() );
-	QFile::remove( siteFilterMarkerFile() );
+	bool success = true;
+	for( const auto& value : entries )
+	{
+		const auto entry = value.toObject();
+		success = regRestore( entry[QStringLiteral("key")].toString(), entry[QStringLiteral("name")].toString(),
+			entry[QStringLiteral("previous")].toObject(), entry[QStringLiteral("expected")].toObject() ) && success;
+	}
+
+	if( state[QStringLiteral("pacExisted")].toBool() )
+	{
+		QSaveFile file( pacFilePath() );
+		const auto contents = QByteArray::fromBase64( state[QStringLiteral("previousPac")].toString().toLatin1() );
+		success = file.open( QIODevice::WriteOnly ) && file.write( contents ) == contents.size() && file.commit() && success;
+	}
+	else
+	{
+		success = ( QFile::exists( pacFilePath() ) == false || QFile::remove( pacFilePath() ) ) && success;
+	}
+
+	if( success )
+	{
+		QFile::remove( siteFilterStateFile() );
+	}
+	else
+	{
+		vWarning() << "ExamMode: restauration des politiques navigateur incomplète";
+	}
+}
+
+
+
+void ExamModeFeaturePlugin::cleanupLegacyWindowsState()
+{
+	if( QFile::exists( legacySiteFilterMarkerFile() ) )
+	{
+		vWarning() << "ExamMode: migration de l'ancien état de filtrage non transactionnel";
+		const QStringList chromiumKeys = {
+			QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"),
+			QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge"),
+		};
+		for( const auto& key : chromiumKeys )
+		{
+			regDelete( key, QStringLiteral("ProxyMode") );
+			regDelete( key, QStringLiteral("ProxyPacUrl") );
+			regDelete( key, QStringLiteral("DnsOverHttpsMode") );
+		}
+		regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Mode") );
+		regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("AutoConfigURL") );
+		regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\Proxy"), QStringLiteral("Locked") );
+		regDelete( QStringLiteral("HKLM\\SOFTWARE\\Policies\\Mozilla\\Firefox\\DNSOverHTTPS"), QStringLiteral("Enabled") );
+		QFile::remove( QStringLiteral("C:/ProgramData/Veyon/exam.pac") );
+		QFile::remove( legacySiteFilterMarkerFile() );
+	}
+
+	QFile legacyState( legacyLaunchPreventionStateFile() );
+	if( legacyState.open( QIODevice::ReadOnly | QIODevice::Text ) )
+	{
+		const auto images = QString::fromUtf8( legacyState.readAll() ).split( QLatin1Char('\n'), Qt::SkipEmptyParts );
+		for( const auto& image : images )
+		{
+			const auto key = QStringLiteral(
+				"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%1" ).arg( image );
+			const auto debugger = regRead( key, QStringLiteral("Debugger") );
+			if( debugger[QStringLiteral("data")].toString().compare(
+				QStringLiteral("C:\\Windows\\System32\\systray.exe"), Qt::CaseInsensitive ) == 0 )
+			{
+				regDelete( key, QStringLiteral("Debugger") );
+			}
+		}
+		legacyState.close();
+		QFile::remove( legacyLaunchPreventionStateFile() );
+	}
 }
 
 #endif

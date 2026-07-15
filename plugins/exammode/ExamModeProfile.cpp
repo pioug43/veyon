@@ -277,33 +277,6 @@ QStringList ExamModeProfile::normalizeDomains( const QStringList& domains, QStri
 }
 
 
-QByteArray ExamModeProfile::buildPac( const QStringList& normalizedDomains, SiteMode mode )
-{
-	QJsonArray domains;
-	for( const auto& domain : normalizedDomains )
-	{
-		domains.append( domain );
-	}
-	const auto json = QString::fromUtf8( QJsonDocument( domains ).toJson( QJsonDocument::Compact ) );
-	const auto listedResult = mode == SiteMode::Allow ? QStringLiteral("DIRECT") :
-												 QStringLiteral("PROXY 127.0.0.1:1");
-	const auto otherResult = mode == SiteMode::Allow ? QStringLiteral("PROXY 127.0.0.1:1") :
-											 QStringLiteral("DIRECT");
-
-	return QStringLiteral(
-		"function FindProxyForURL(url, host) {\n"
-		"  host = ('' + host).toLowerCase();\n"
-		"  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';\n"
-		"  var list = %1;\n"
-		"  for (var i = 0; i < list.length; ++i) {\n"
-		"    var d = list[i];\n"
-		"    if (host === d || dnsDomainIs(host, '.' + d)) return '%2';\n"
-		"  }\n"
-		"  return '%3';\n"
-		"}\n" ).arg( json, listedResult, otherResult ).toUtf8();
-}
-
-
 ExamModeProfile::ProcessPolicy ExamModeProfile::resolveProcessRules( const QVariantList& rules,
 														 const QString& platform, QStringList* rejected )
 {
@@ -451,7 +424,8 @@ QByteArray ExamModeProfile::buildPac( const QList<UrlRule>& rules, RuleAction de
 
 QString ExamModeProfile::profileDigest( const QString& profileId, qint64 revision,
 										const ProcessPolicy& processPolicy, const QList<UrlRule>& urlRules,
-										RuleAction defaultUrlAction, int leaseSeconds )
+										RuleAction defaultUrlAction, int leaseSeconds,
+										const NetworkPolicy& networkPolicy )
 {
 	QJsonArray terminate;
 	for( const auto& application : processPolicy.terminateApplications ) { terminate.append( application ); }
@@ -465,12 +439,25 @@ QString ExamModeProfile::profileDigest( const QString& profileId, qint64 revisio
 			{ QStringLiteral("expression"), rule.expression }, { QStringLiteral("regex"), rule.regularExpression },
 		} );
 	}
+	const auto toArray = []( const QStringList& values ) {
+		QJsonArray array;
+		for( const auto& value : values ) { array.append( value ); }
+		return array;
+	};
 	const QJsonObject canonical{
 		{ QStringLiteral("profileId"), profileId }, { QStringLiteral("revision"), revision },
 		{ QStringLiteral("leaseSeconds"), leaseSeconds },
 		{ QStringLiteral("terminateApplications"), terminate }, { QStringLiteral("preventLaunchApplications"), prevent },
 		{ QStringLiteral("urlRules"), urls },
 		{ QStringLiteral("defaultUrlAction"), defaultUrlAction == RuleAction::Allow ? QStringLiteral("allow") : QStringLiteral("block") },
+		// La politique réseau fait partie de l'identité du profil : sans elle, une
+		// modification de l'allow-list egress (backend firewall) serait indétectable
+		// à révision constante et non couverte par le contrôle d'empreinte.
+		{ QStringLiteral("networkBackend"),
+			networkPolicy.backend == NetworkBackend::Firewall ? QStringLiteral("firewall") : QStringLiteral("hosts") },
+		{ QStringLiteral("allowedNetworks"), toArray( networkPolicy.allowedNetworks ) },
+		{ QStringLiteral("dnsServers"), toArray( networkPolicy.dnsServers ) },
+		{ QStringLiteral("supervisionNetworks"), toArray( networkPolicy.supervisionNetworks ) },
 	};
 	return QString::fromLatin1( QCryptographicHash::hash(
 		QJsonDocument( canonical ).toJson( QJsonDocument::Compact ), QCryptographicHash::Sha256 ).toHex() );

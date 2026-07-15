@@ -43,15 +43,6 @@ private slots:
 		QCOMPARE( rejected.size(), 4 );
 	}
 
-	void buildsAllowPac()
-	{
-		const auto pac = ExamModeProfile::buildPac( { QStringLiteral("example.org") },
-			ExamModeProfile::SiteMode::Allow );
-		QVERIFY( pac.contains( "dnsDomainIs(host, '.' + d)" ) );
-		QVERIFY( pac.contains( "return 'DIRECT'" ) );
-		QVERIFY( pac.contains( "return 'PROXY 127.0.0.1:1'" ) );
-	}
-
 	void resolvesPlatformProcessRulesAndAllowsExceptions()
 	{
 		const QVariantList rules{
@@ -108,6 +99,21 @@ private slots:
 		QCOMPARE( first.size(), 64 );
 		QCOMPARE( first, again );
 		QVERIFY( first != revised );
+
+		// la politique réseau fait partie de l'identité : un changement d'allow-list
+		// egress doit modifier l'empreinte, même à révision et reste constants.
+		const ExamModeProfile::NetworkPolicy firewallPolicy{
+			ExamModeProfile::NetworkBackend::Firewall,
+			{ QStringLiteral("10.0.0.0/24") }, { QStringLiteral("10.0.0.53/32") }, {} };
+		const auto withNetwork = ExamModeProfile::profileDigest( QStringLiteral("math-2026"), 4, processPolicy,
+			rules, ExamModeProfile::RuleAction::Block, 300, firewallPolicy );
+		const ExamModeProfile::NetworkPolicy widenedPolicy{
+			ExamModeProfile::NetworkBackend::Firewall,
+			{ QStringLiteral("10.0.0.0/8") }, { QStringLiteral("10.0.0.53/32") }, {} };
+		const auto widened = ExamModeProfile::profileDigest( QStringLiteral("math-2026"), 4, processPolicy,
+			rules, ExamModeProfile::RuleAction::Block, 300, widenedPolicy );
+		QVERIFY( withNetwork != first );		// la politique réseau entre dans le digest
+		QVERIFY( withNetwork != widened );		// un CIDR élargi change l'empreinte
 	}
 
 	void validatesSiteMode()

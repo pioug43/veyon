@@ -22,12 +22,14 @@
  *
  */
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -83,6 +85,22 @@ QJsonObject readJsonFile( const QString& path )
 	const auto document = QJsonDocument::fromJson( file.readAll(), &error );
 	return error.error == QJsonParseError::NoError && document.isObject() ? document.object() : QJsonObject{};
 }
+
+
+// Lance un utilitaire (netsh/schtasks) sans shell et renvoie true sur code 0.
+// La stderr éventuelle est renvoyée pour journalisation.
+bool runProcessSucceeds( const QString& program, const QStringList& arguments,
+						 QByteArray* standardError = nullptr, int timeoutMs = 8000 )
+{
+	QProcess process;
+	process.start( program, arguments );
+	const bool finished = process.waitForStarted( 3000 ) && process.waitForFinished( timeoutMs );
+	if( standardError )
+	{
+		*standardError = process.readAllStandardError();
+	}
+	return finished && process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+}
 #endif
 
 }
@@ -118,6 +136,14 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 		{
 			vInfo() << "ExamMode: restauration d'un filtrage de sites résiduel";
 			removeWindowsSiteFiltering();
+		}
+		// firewall egress résiduel (crash pendant un examen) : son marqueur est
+		// indépendant du filtrage PAC (profil purement CIDR). Un examen encore actif
+		// sera ré-appliqué par le portail au prochain re-push.
+		else if( QFile::exists( windowsFirewallStateFile() ) )
+		{
+			vInfo() << "ExamMode: retrait d'un firewall egress Windows résiduel";
+			removeWindowsFirewall();
 		}
 #endif
 #if defined(Q_OS_LINUX)
@@ -367,7 +393,8 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	}
 	const auto normalizedProfileId = profileId.trimmed().isEmpty() ? QStringLiteral("legacy") : profileId.trimmed();
 	const auto digest = ExamModeProfile::profileDigest( normalizedProfileId, profileRevision,
-		normalizedProcessPolicy, effectiveUrlRules, effectiveDefaultAction, normalizedLeaseSeconds );
+		normalizedProcessPolicy, effectiveUrlRules, effectiveDefaultAction, normalizedLeaseSeconds,
+		{ m_networkBackend, m_allowedNetworks, m_dnsServers, m_supervisionNetworks } );
 	if( validMode == false )
 	{
 		vWarning() << "ExamMode: mode de filtrage invalide" << sitesMode << "— utilisation de block";
@@ -489,6 +516,20 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		} );
 	}
 	m_watchdog->start( m_leaseSeconds * 1000 );
+
+	// Dead-man du firewall : il doit être repoussé à CHAQUE renouvellement, pas
+	// seulement quand la politique change — sinon, en marche normale (même profil
+	// re-poussé chaque minute), il se déclencherait ~un bail après la dernière
+	// modification de politique, en plein examen. Le dead-man n'est qu'un secours
+	// pour la mort du processus ; tant que Veyon vit, c'est le watchdog qui lève.
+	if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall && m_siteFilteringActive )
+	{
+#if defined(Q_OS_LINUX)
+		armFirewallDeadMan( m_leaseSeconds + 60 );
+#elif defined(Q_OS_WIN)
+		armWindowsFirewallDeadMan( m_leaseSeconds + 60 );
+#endif
+	}
 
 	enforceTick();		// passe immédiate sur les processus interdits
 	return true;
@@ -769,6 +810,14 @@ bool ExamModeFeaturePlugin::applyHostsBlocking( const QStringList& sites )
 		flushDnsCache();
 		return true;
 	}
+
+	// Limite intrinsèque du fichier hosts : pas de jokers. On ne couvre que le
+	// domaine et son sous-domaine « www » ; les autres sous-domaines (m., login.,
+	// cdn.…) et l'accès par IP directe restent joignables. Pour une étanchéité
+	// réelle sous Linux, utiliser networkBackend=firewall (allow-list egress).
+	vWarning() << "ExamMode: backend hosts — seuls le domaine et www.<domaine> sont bloqués;"
+			   << "les autres sous-domaines et l'accès par IP ne le sont pas. Préférer"
+			   << "networkBackend=firewall pour une allow-list egress robuste.";
 
 	QFile file( hostsFilePath() );
 	if( file.open( QIODevice::ReadWrite | QIODevice::Text ) == false )
@@ -1373,16 +1422,28 @@ bool ExamModeFeaturePlugin::regRestore( const QString& key, const QString& name,
  */
 bool ExamModeFeaturePlugin::applyWindowsSiteFiltering( const QStringList& sites, const QString& mode )
 {
-	removeWindowsSiteFiltering();		// restaure d'abord l'état précédent
+	removeWindowsSiteFiltering();		// restaure d'abord l'état précédent (PAC + firewall)
 	if( QFile::exists( siteFilterStateFile() ) )
 	{
 		vWarning() << "ExamMode: restauration précédente incomplète; nouveau filtrage refusé";
 		return false;
 	}
 
+	// Backend firewall (opt-in) : allow-list egress au niveau du pare-feu Windows,
+	// robuste à l'IP directe / DoH / résolveur alternatif / VPN — parité avec le
+	// backend nftables Linux. Posé AVANT le court-circuit PAC pour couvrir aussi les
+	// profils purement CIDR (sans règle URL). Fail-closed : en cas d'échec, aucune
+	// règle partielle et le poste reste ouvert (bruyamment journalisé).
+	if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall &&
+		applyWindowsFirewall() == false )
+	{
+		vWarning() << "ExamMode: backend firewall Windows non appliqué (poste NON isolé)";
+		return false;
+	}
+
 	if( m_urlRules.isEmpty() && m_defaultUrlAction == ExamModeProfile::RuleAction::Allow )
 	{
-		return true;		// liste noire vide = rien à filtrer
+		return true;		// pas de filtrage de domaines PAC (le firewall éventuel est déjà posé)
 	}
 	const auto pac = ExamModeProfile::buildPac( m_urlRules, m_defaultUrlAction );
 	const auto dataUrl = QStringLiteral("data:application/x-ns-proxy-autoconfig;base64,")
@@ -1480,6 +1541,10 @@ bool ExamModeFeaturePlugin::applyWindowsSiteFiltering( const QStringList& sites,
 
 void ExamModeFeaturePlugin::removeWindowsSiteFiltering()
 {
+	// Retire d'abord l'allow-list egress (rétablit la connectivité) ; idempotent,
+	// sans effet si le backend firewall n'a jamais été posé.
+	removeWindowsFirewall();
+
 	if( QFile::exists( siteFilterStateFile() ) == false )
 	{
 		return;
@@ -1564,6 +1629,224 @@ void ExamModeFeaturePlugin::cleanupLegacyWindowsState()
 		legacyState.close();
 		QFile::remove( legacyLaunchPreventionStateFile() );
 	}
+}
+
+
+
+QString ExamModeFeaturePlugin::windowsFirewallStateFile()
+{
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-firewall-state.json");
+}
+
+
+
+QString ExamModeFeaturePlugin::windowsFirewallRestoreScript()
+{
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-firewall-restore.cmd");
+}
+
+
+
+/**
+ * Applique une allow-list egress via le pare-feu Windows Defender (politique de
+ * sortie par défaut « block »). Parité avec le backend nftables Linux : robuste à
+ * l'IP directe, au DoH vers un résolveur arbitraire, au VPN vers un endpoint
+ * arbitraire — l'enforcement est dans le pare-feu, pas dans le navigateur.
+ * Fail-closed : en cas d'échec, aucune règle partielle n'est laissée et le poste
+ * reste ouvert (bruyamment journalisé). Un dead-man planifié restaure la
+ * connectivité à l'échéance du bail même si Veyon meurt. EXPÉRIMENTAL : à valider
+ * en laboratoire sur l'image exacte avant production (voir README).
+ */
+bool ExamModeFeaturePlugin::applyWindowsFirewall()
+{
+	removeWindowsFirewall();		// repart d'un état propre (idempotent)
+
+	// /32 (IPv4) et /128 (IPv6) : netsh attend l'IP nue, pas le préfixe.
+	const auto toRemoteIp = []( const QString& cidr ) -> QString {
+		const auto parts = cidr.split( QLatin1Char('/') );
+		if( parts.size() != 2 ) { return {}; }
+		return ( parts.at( 1 ) == QStringLiteral("32") || parts.at( 1 ) == QStringLiteral("128") ) ?
+			parts.first() : cidr;
+	};
+
+	QStringList allowIps;
+	for( const auto& cidr : m_allowedNetworks + m_supervisionNetworks )
+	{
+		const auto ip = toRemoteIp( cidr );
+		if( ip.isEmpty() == false ) { allowIps.append( ip ); }
+	}
+	QStringList dnsIps;
+	for( const auto& cidr : m_dnsServers )
+	{
+		const auto ip = toRemoteIp( cidr );
+		if( ip.isEmpty() == false ) { dnsIps.append( ip ); }
+	}
+
+	// marqueur d'état (nettoyage au prochain démarrage après crash) + politique à
+	// restaurer (défaut Windows OOTB : entrant bloqué, sortant autorisé).
+	if( writeJsonFile( windowsFirewallStateFile(), QJsonObject{
+			{ QStringLiteral("version"), 1 },
+			{ QStringLiteral("rule"), QStringLiteral("VeyonExamModeEgress") },
+			{ QStringLiteral("restorePolicy"), QStringLiteral("blockinbound,allowoutbound") } } ) == false )
+	{
+		vWarning() << "ExamMode: impossible d'écrire l'état du firewall Windows";
+		return false;
+	}
+
+	// 1) Règles ALLOW d'abord — inoffensives tant que la politique par défaut reste
+	//    « allow » : si l'ajout échoue, on n'a pas encore fermé la sortie (fail-open).
+	bool ok = true;
+	if( allowIps.isEmpty() == false )
+	{
+		ok = runProcessSucceeds( QStringLiteral("netsh"), {
+			QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("add"), QStringLiteral("rule"),
+			QStringLiteral("name=VeyonExamModeEgress"), QStringLiteral("dir=out"), QStringLiteral("action=allow"),
+			QStringLiteral("remoteip=") + allowIps.join( QLatin1Char(',') ), QStringLiteral("enable=yes") } ) && ok;
+	}
+	if( dnsIps.isEmpty() == false )
+	{
+		for( const auto& protocol : { QStringLiteral("UDP"), QStringLiteral("TCP") } )
+		{
+			ok = runProcessSucceeds( QStringLiteral("netsh"), {
+				QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("add"), QStringLiteral("rule"),
+				QStringLiteral("name=VeyonExamModeEgress"), QStringLiteral("dir=out"), QStringLiteral("action=allow"),
+				QStringLiteral("protocol=") + protocol, QStringLiteral("remoteport=53"),
+				QStringLiteral("remoteip=") + dnsIps.join( QLatin1Char(',') ), QStringLiteral("enable=yes") } ) && ok;
+		}
+	}
+	if( ok == false )
+	{
+		vWarning() << "ExamMode: échec de l'ajout des règles firewall Windows";
+		removeWindowsFirewall();
+		return false;
+	}
+
+	// 2) dead-man AVANT la bascule en block : si Veyon meurt juste après, la tâche
+	//    planifiée restaure quand même la connectivité à l'échéance du bail.
+	armWindowsFirewallDeadMan( m_leaseSeconds + 60 );
+
+	// 3) Bascule de la politique de sortie par défaut sur « block » (dernier geste).
+	QByteArray error;
+	if( runProcessSucceeds( QStringLiteral("netsh"), {
+			QStringLiteral("advfirewall"), QStringLiteral("set"), QStringLiteral("allprofiles"),
+			QStringLiteral("firewallpolicy"), QStringLiteral("blockinbound,blockoutbound") }, &error ) == false )
+	{
+		vWarning() << "ExamMode: échec du passage en egress block (poste NON isolé):" << error;
+		removeWindowsFirewall();
+		return false;
+	}
+
+	vInfo() << "ExamMode: firewall egress Windows actif —" << allowIps.size() << "réseau(x) autorisé(s),"
+			<< dnsIps.size() << "résolveur(s) DNS";
+	return true;
+}
+
+
+
+/** Retire les règles egress et restaure la politique par défaut. Idempotent. */
+void ExamModeFeaturePlugin::removeWindowsFirewall()
+{
+	// Backend firewall jamais posé (ni état ni script résiduel) : ne pas toucher au
+	// pare-feu — la grande majorité des déploiements n'utilisent que le PAC.
+	if( QFile::exists( windowsFirewallStateFile() ) == false &&
+		QFile::exists( windowsFirewallRestoreScript() ) == false )
+	{
+		return;
+	}
+
+	disarmWindowsFirewallDeadMan();
+
+	// Restaure la politique de sortie par défaut AVANT de retirer les règles, pour
+	// ne jamais laisser une fenêtre « sortie bloquée sans aucune règle d'exception ».
+	auto restorePolicy = QStringLiteral("blockinbound,allowoutbound");
+	if( QFile::exists( windowsFirewallStateFile() ) )
+	{
+		const auto saved = readJsonFile( windowsFirewallStateFile() ).value(
+			QStringLiteral("restorePolicy") ).toString();
+		if( saved.isEmpty() == false )
+		{
+			restorePolicy = saved;
+		}
+	}
+	QByteArray error;
+	if( runProcessSucceeds( QStringLiteral("netsh"), {
+			QStringLiteral("advfirewall"), QStringLiteral("set"), QStringLiteral("allprofiles"),
+			QStringLiteral("firewallpolicy"), restorePolicy }, &error ) == false )
+	{
+		vWarning() << "ExamMode: échec de la restauration de la politique firewall Windows:" << error;
+	}
+
+	// Suppression de nos règles (idempotent : delete d'une règle absente => non nul, ignoré).
+	QProcess deleteRule;
+	deleteRule.start( QStringLiteral("netsh"), {
+		QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("delete"),
+		QStringLiteral("rule"), QStringLiteral("name=VeyonExamModeEgress") } );
+	deleteRule.waitForStarted( 3000 );
+	deleteRule.waitForFinished( 5000 );
+
+	QFile::remove( windowsFirewallStateFile() );
+}
+
+
+
+/**
+ * Arme (ou ré-arme) une tâche planifiée à nom fixe qui restaurera la connectivité
+ * à l'échéance du bail (+marge), même si Veyon meurt — équivalent Windows du
+ * dead-man systemd Linux. Chaque renouvellement remplace la tâche précédente.
+ * NB : schtasks attend l'heure/date au format de la locale système ; on s'aligne
+ * dessus via QLocale::system(). À valider sur l'image cible (voir README).
+ */
+void ExamModeFeaturePlugin::armWindowsFirewallDeadMan( int seconds ) const
+{
+	disarmWindowsFirewallDeadMan();
+
+	// Script exécuté par la tâche : restaure la politique, retire les règles, puis
+	// se supprime lui-même. Sans shell interactif (schtasks lance cmd sur le .cmd).
+	const auto script = QStringLiteral(
+		"@echo off\r\n"
+		"netsh advfirewall set allprofiles firewallpolicy blockinbound,allowoutbound\r\n"
+		"netsh advfirewall firewall delete rule name=VeyonExamModeEgress\r\n"
+		"schtasks /delete /tn veyon-exammode-failsafe /f\r\n" );
+	QDir().mkpath( QFileInfo( windowsFirewallRestoreScript() ).absolutePath() );
+	QSaveFile file( windowsFirewallRestoreScript() );
+	if( file.open( QIODevice::WriteOnly ) == false ||
+		file.write( script.toUtf8() ) < 0 || file.commit() == false )
+	{
+		vWarning() << "ExamMode: script de restauration firewall non écrit (dead-man non armé)";
+		return;
+	}
+
+	const auto trigger = QDateTime::currentDateTime().addSecs( qMax( 60, seconds ) );
+	const auto startTime = trigger.time().toString( QStringLiteral("HH:mm") );
+	const auto startDate = QLocale::system().toString( trigger.date(), QLocale::ShortFormat );
+
+	// /tr passe par cmd.exe : chemin en séparateurs natifs (backslash) pour que « / »
+	// ne soit pas pris pour un commutateur.
+	QByteArray error;
+	if( runProcessSucceeds( QStringLiteral("schtasks"), {
+			QStringLiteral("/create"), QStringLiteral("/tn"), QStringLiteral("veyon-exammode-failsafe"),
+			QStringLiteral("/tr"), QDir::toNativeSeparators( windowsFirewallRestoreScript() ),
+			QStringLiteral("/sc"), QStringLiteral("once"),
+			QStringLiteral("/st"), startTime, QStringLiteral("/sd"), startDate,
+			QStringLiteral("/ru"), QStringLiteral("SYSTEM"), QStringLiteral("/rl"), QStringLiteral("HIGHEST"),
+			QStringLiteral("/f") }, &error ) == false )
+	{
+		vWarning() << "ExamMode: dead-man planifié non armé (schtasks indisponible?):" << error;
+	}
+}
+
+
+
+void ExamModeFeaturePlugin::disarmWindowsFirewallDeadMan() const
+{
+	QProcess remove;
+	remove.start( QStringLiteral("schtasks"), {
+		QStringLiteral("/delete"), QStringLiteral("/tn"), QStringLiteral("veyon-exammode-failsafe"),
+		QStringLiteral("/f") } );
+	remove.waitForStarted( 3000 );
+	remove.waitForFinished( 5000 );
+
+	QFile::remove( windowsFirewallRestoreScript() );
 }
 
 #endif

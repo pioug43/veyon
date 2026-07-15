@@ -23,7 +23,7 @@ restores its previous system state automatically when the lease expires.
 | `profileRevision` | non-negative integer | Monotonic revision within a profile identity |
 | `profileDigest` | SHA-256 hex string | Optional expected digest of the normalized effective profile |
 | `strict` | boolean | Opt-in: also block shells, interpreters, and system tools (see below); default `false` |
-| `networkBackend` | `hosts` or `firewall` | Linux network enforcement backend; default `hosts` |
+| `networkBackend` | `hosts` or `firewall` | Network enforcement backend (Linux `hosts`/nftables, Windows PAC/firewall); default `hosts` |
 | `allowedNetworks` | string list | CIDR/IP allowed for egress (firewall backend) |
 | `dnsServers` | string list | DNS resolver IPs allowed through the firewall |
 | `supervisionNetworks` | string list | CIDR of the portal/master always allowed through the firewall |
@@ -68,6 +68,39 @@ Requires root (the endpoint Service/Server component) and `nftables` +
 the exam-server CIDRs (domain-only allow-listing is not possible at the firewall
 layer — that is what the Windows PAC backend is for).
 
+## Windows firewall backend (experimental, opt-in)
+
+`networkBackend: firewall` on Windows sets the Windows Defender Firewall default
+**outbound action to block** for all profiles and adds an allow-list of `dir=out`
+rules (named `VeyonExamModeEgress`) for `allowedNetworks` / `supervisionNetworks`
+and DNS (udp/tcp 53) to `dnsServers`. Like the Linux nftables backend, this cannot
+be bypassed by a direct IP connection, DoH, an alternative resolver, or a VPN —
+enforcement is in the firewall and applies to every process. It is applied **in
+addition to** the browser PAC (which still provides domain-level filtering), not
+instead of it.
+
+It is **disabled by default and experimental** — validate it in a lab on your
+exact image before production, and always supply the VDI transport and portal
+CIDRs in `supervisionNetworks`/`allowedNetworks` or the exam session itself will be
+cut. Safeguards mirror the Linux backend:
+
+* **Rules first, block last**: allow rules are added while the default is still
+  `allow`; the switch to `blockoutbound` is the final step, so a failed apply
+  leaves the machine *open* (loudly logged), never half-blocked. Any failure rolls
+  back the whole ruleset.
+* **Dead-man scheduled task**: a fixed-name task (`veyon-exammode-failsafe`)
+  restores the default outbound policy and deletes the rules at `leaseSeconds + 60`.
+  Each renewal pushes it back; if Veyon dies the task still restores connectivity.
+* **Startup cleanup**: a residual ruleset left by a crash is removed when the
+  service restarts, and the previous outbound policy is restored.
+
+Requires the endpoint Service/Server component (runs as SYSTEM) and `netsh` +
+`schtasks` on the image. The dead-man task's trigger time is formatted with the
+system locale (`schtasks` expectation); verify it arms correctly on your image's
+locale. Restoration targets the Windows out-of-box default
+(`blockinbound,allowoutbound`); if your image ships a non-default outbound policy,
+adjust it after an exam.
+
 ## Platform capabilities
 
 | Capability | Windows | Linux | macOS |
@@ -76,7 +109,8 @@ layer — that is what the Windows PAC backend is for).
 | Prevent application launch | Yes, IFEO | Yes, fanotify | No |
 | Site block list | PAC policies | `hosts` / firewall | `hosts` |
 | Site allow list | PAC policies | firewall (CIDR) | Refused |
-| Crash-safe restoration | Registry/PAC backup | Marked `hosts` / nftables dead-man | Marked `hosts` section |
+| Egress allow-list (CIDR) | firewall (experimental) | firewall (nftables) | No |
+| Crash-safe restoration | Registry/PAC backup + firewall dead-man | Marked `hosts` / nftables dead-man | Marked `hosts` section |
 
 ## Linux launch prevention (fanotify)
 

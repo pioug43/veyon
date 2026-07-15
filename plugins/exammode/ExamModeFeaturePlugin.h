@@ -162,6 +162,16 @@ private:
 	void removeWindowsSiteFiltering();
 	bool writePacFile();
 	void cleanupLegacyWindowsState();
+	// Backend egress Windows (pare-feu Windows Defender, allow-list par CIDR) —
+	// parité avec le backend nftables Linux, robuste à l'IP directe / DoH / VPN.
+	// Expérimental, opt-in (networkBackend=firewall). Fail-closed. Restauration au
+	// stop/expiration/prochain démarrage du service ; dead-man planifié en secours.
+	bool applyWindowsFirewall();
+	void removeWindowsFirewall();
+	void armWindowsFirewallDeadMan( int seconds ) const;
+	void disarmWindowsFirewallDeadMan() const;
+	static QString windowsFirewallStateFile();
+	static QString windowsFirewallRestoreScript();
 	static QString pacFilePath();
 	static QString siteFilterStateFile();
 	static QString legacySiteFilterMarkerFile();

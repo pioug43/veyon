@@ -142,6 +142,11 @@ void ExamModeLinuxExecGuard::run()
 	// tampon aligné sur la structure d'événement fanotify.
 	alignas(struct fanotify_event_metadata) char buffer[8192];
 
+	// En cas d'incompatibilité d'ABI on bascule en fail-open : on continue de
+	// vider la file et d'autoriser chaque exec (sinon les execve en attente
+	// resteraient bloqués), mais on ne journalise l'anomalie qu'une fois.
+	bool abiMismatchReported = false;
+
 	while( true )
 	{
 		struct pollfd fds[2];
@@ -188,7 +193,28 @@ void ExamModeLinuxExecGuard::run()
 		{
 			if( meta->vers != FANOTIFY_METADATA_VERSION )
 			{
-				// incompatibilité ABI : on cesse la surveillance en fail-open.
+				// Incompatibilité ABI : fail-open. Il faut TOUJOURS répondre à un
+				// événement de permission en attente, sinon l'execve concerné reste
+				// bloqué indéfiniment (l'inverse du fail-safe visé). On autorise
+				// l'exec courant et on ferme son fd ; on cesse de traiter ce lot.
+				if( meta->fd >= 0 )
+				{
+					struct fanotify_response response;
+					response.fd = meta->fd;
+					response.response = FAN_ALLOW;
+					ssize_t written;
+					do
+					{
+						written = write( m_fanotifyFd, &response, sizeof( response ) );
+					}
+					while( written < 0 && errno == EINTR );
+					close( meta->fd );
+				}
+				if( abiMismatchReported == false )
+				{
+					vWarning() << "ExamMode: version d'ABI fanotify inattendue — autorisation systématique (fail-open)";
+					abiMismatchReported = true;
+				}
 				remaining = 0;
 				break;
 			}

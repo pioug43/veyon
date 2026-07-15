@@ -44,6 +44,17 @@ enum class NetworkBackend
 	Firewall,	// Linux : nftables egress allow-list par CIDR (fail-closed)
 };
 
+// Politique réseau effective (backend + CIDR autorisés). Regroupée pour entrer
+// dans le digest de profil : l'intégrité doit couvrir l'allow-list egress, sinon
+// une modification des réseaux autorisés passe inaperçue à révision constante.
+struct NetworkPolicy
+{
+	NetworkBackend backend{NetworkBackend::Hosts};
+	QStringList allowedNetworks;
+	QStringList dnsServers;
+	QStringList supervisionNetworks;
+};
+
 // Bornes anti-abus (DoS / profils dégénérés) sur le nombre d'entrées acceptées.
 constexpr int MaxProcessRules = 512;
 constexpr int MaxUrlRules = 512;
@@ -64,7 +75,6 @@ QStringList normalizeNetworks( const QStringList& networks, QStringList* rejecte
 ProcessPolicy resolveProcessRules( const QVariantList& rules, const QString& platform,
 								  QStringList* rejected = nullptr );
 QList<UrlRule> normalizeUrlRules( const QVariantList& rules, QStringList* rejected = nullptr );
-QByteArray buildPac( const QStringList& normalizedDomains, SiteMode mode );
 QByteArray buildPac( const QList<UrlRule>& rules, RuleAction defaultAction );
 // Génère un ruleset nftables egress à politique « drop » : ne laisse sortir que
 // la loopback, les connexions établies, le DNS vers les résolveurs autorisés et
@@ -72,6 +82,7 @@ QByteArray buildPac( const QList<UrlRule>& rules, RuleAction defaultAction );
 QByteArray buildNftablesRuleset( const QStringList& allowedNetworks, const QStringList& dnsServers,
 								 const QStringList& supervisionNetworks );
 QString profileDigest( const QString& profileId, qint64 revision, const ProcessPolicy& processPolicy,
-					   const QList<UrlRule>& urlRules, RuleAction defaultUrlAction, int leaseSeconds );
+					   const QList<UrlRule>& urlRules, RuleAction defaultUrlAction, int leaseSeconds,
+					   const NetworkPolicy& networkPolicy = {} );
 
 }

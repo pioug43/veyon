@@ -49,15 +49,17 @@ RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" qt6-qt5compat
 # Couche séparée pour préserver le cache des couches précédentes.
 RUN make MXE_TARGETS="${MXE_TARGET}" JOBS="$(nproc)" qt6-qthttpserver
 
-# En-têtes JPEG : MXE installe DEUX paquets — « jpeg » (IJG, jpeglib.h SANS les
-# extensions de colorspace JCS_EXT_*) dans include/, et « libjpeg-turbo » (AVEC
-# JCS_EXT_*) dans include/libjpeg-turbo/. ultravnc (vncEncodeUltra2) exige JCS_EXT_*
-# à la COMPILATION → on rend les en-têtes turbo canoniques dans include/.
-# ATTENTION : la DLL jpeg présente est libjpeg-10.dll (IJG v10) — les JCS_EXT_* ne
-# sont pas garantis à l'EXÉCUTION. À valider (encodage Ultra2), ou fournir un vrai
-# libjpeg-turbo (DLL + en-têtes cohérents) plutôt que ce contournement d'en-têtes.
-RUN cp -f /opt/mxe/usr/${MXE_TARGET}/include/libjpeg-turbo/*.h \
-        /opt/mxe/usr/${MXE_TARGET}/include/
+# JPEG : MXE installe DEUX libjpeg — « jpeg » (IJG v10 : include/jpeglib.h SANS les
+# extensions JCS_EXT_*, bin/libjpeg-10.dll) et « libjpeg-turbo » 3.2 (AVEC JCS_EXT_*,
+# dans les sous-dossiers */libjpeg-turbo/). ultravnc (vncEncodeUltra2) exige JCS_EXT_*
+# à la compilation ET à l'exécution. On rend donc libjpeg-turbo canonique pour le lien
+# de Veyon — en-têtes + import lib (soname libjpeg-62) + DLL — de sorte que veyon-core
+# et ultravnc soient cohérents (turbo header + turbo runtime). On CONSERVE libjpeg-10.dll
+# car le plugin image Qt (qjpeg.dll) y est déjà lié ; les deux DLL sont livrées.
+RUN P=/opt/mxe/usr/${MXE_TARGET} \
+ && cp -f $P/include/libjpeg-turbo/*.h        $P/include/ \
+ && cp -f $P/lib/libjpeg-turbo/libjpeg.dll.a  $P/lib/ \
+ && cp -f $P/bin/libjpeg-turbo/libjpeg-62.dll $P/bin/
 
 # Layout attendu par build.sh (/usr/x86_64-w64-mingw32 + qt-cmake wrapper)
 RUN ln -sfn /opt/mxe/usr/${MXE_TARGET} /usr/x86_64-w64-mingw32 \

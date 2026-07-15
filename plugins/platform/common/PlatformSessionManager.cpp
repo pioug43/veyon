@@ -60,11 +60,15 @@ PlatformSessionManager::~PlatformSessionManager()
 
 void PlatformSessionManager::run()
 {
+	QLocalServer* server = nullptr;
 	if( mode() == Mode::Multi )
 	{
-		auto server = new QLocalServer;
+		server = new QLocalServer;
 		server->setSocketOptions( QLocalServer::WorldAccessOption );
-		server->listen( serverName() );
+		if( server->listen( serverName() ) == false )
+		{
+			vCritical() << "PlatformSessionManager: listen failed:" << server->errorString();
+		}
 
 		connect( server, &QLocalServer::newConnection, server, [this, server]() {
 			auto connection = server->nextPendingConnection();
@@ -80,6 +84,8 @@ void PlatformSessionManager::run()
 	}
 
 	QThread::run();
+
+	delete server;		// libère le serveur (sans parent) et ses sockets à la sortie de la boucle
 }
 
 PlatformSessionManager::SessionId PlatformSessionManager::openSession( const PlatformSessionId& platformSessionId )

@@ -161,6 +161,9 @@ void ServiceDataManager::acceptConnection()
 {
 	auto socket = m_server->nextPendingConnection();
 
+	// détruire la socket à la déconnexion : sinon chaque client s'accumule comme
+	// enfant du m_server (longue durée de vie) → fuite sur la durée du service.
+	connect( socket, &QLocalSocket::disconnected, socket, &QLocalSocket::deleteLater );
 	connect( socket, &QLocalSocket::readyRead,
 			 socket, [this, socket]() { handleConnection( socket ); } );
 }

@@ -667,12 +667,23 @@ bool ExamModeFeaturePlugin::requiredCapabilitiesAvailable( const ExamModeSession
 void ExamModeFeaturePlugin::setStatus( const QString& status, const QString& errorCode,
 									  const QString& errorMessage, const QVariantMap& backendResults )
 {
+	// N'incrémenter la version (donc ne réémettre un ExamStatus aux clients) que
+	// lorsqu'un champ MATÉRIEL du statut change réellement. Les cycles périodiques
+	// (enforceTick 1,5 s / driftTimer 10 s) réaffirment souvent le MÊME état ; sans
+	// ce garde, chacun réinjecterait un message de fonctionnalité dans le flux RFB
+	// de chaque client pendant un examen. La comparaison utilise les anciennes
+	// valeurs des membres, donc AVANT toute réaffectation.
+	const bool changed = ( m_status != status ) || ( m_errorCode != errorCode ) ||
+						 ( m_errorMessage != errorMessage ) || ( m_backendResults != backendResults );
 	m_status = status;
 	m_errorCode = errorCode;
 	m_errorMessage = errorMessage;
 	m_backendResults = backendResults;
 	m_statusTimestampMs = QDateTime::currentMSecsSinceEpoch();
-	++m_statusVersion;
+	if( changed )
+	{
+		++m_statusVersion;
+	}
 }
 
 

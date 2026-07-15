@@ -23,10 +23,16 @@ restores its previous system state automatically when the lease expires.
 | `profileRevision` | non-negative integer | Monotonic revision within a profile identity |
 | `profileDigest` | SHA-256 hex string | Optional expected digest of the normalized effective profile |
 | `strict` | boolean | Opt-in: also block shells, interpreters, and system tools (see below); default `false` |
-| `networkBackend` | `hosts` or `firewall` | Network enforcement backend (Linux `hosts`/nftables, Windows PAC/firewall); default `hosts` |
+| `networkBackend` | `hosts` or `firewall` | Network enforcement backend (Linux `hosts`/nftables; Windows `firewall` is explicitly refused until WFP support); default `hosts` |
 | `allowedNetworks` | string list | CIDR/IP allowed for egress (firewall backend) |
 | `dnsServers` | string list | DNS resolver IPs allowed through the firewall |
 | `supervisionNetworks` | string list | CIDR of the portal/master always allowed through the firewall |
+| `sessionId` / `sequence` | string / positive integer | Session identity and strictly increasing anti-replay counter |
+| `issuedAt` / `expiresAt` | epoch milliseconds | Signed freshness window (maximum two hours) |
+| `highSecurity` | boolean | Requires a valid RSA-SHA512 profile signature and strong network enforcement |
+| `signingKeyId` / `profileSignature` | string / base64 | Veyon public-key name and signature of the canonical session/profile payload |
+| `requiredCapabilities` | string list | Endpoint or externally attested controls which must be available |
+| `externalCapabilities` | object | Broker controls attested as `ACTIVE`; covered by the signature |
 
 Application, site, and network lists are normalized, deduplicated, and sorted
 before they are applied. Invalid values are rejected and logged. Rule counts are
@@ -44,12 +50,14 @@ opt-in because it breaks exams that legitimately need a terminal or interpreter.
 ## Linux firewall backend (experimental, opt-in)
 
 `networkBackend: firewall` replaces the `hosts` block list with an **nftables
-egress allow-list** (`policy drop`): only loopback, established/related
-connections, DNS to the listed `dnsServers`, and the `allowedNetworks` /
+egress allow-list** (`policy drop`): only loopback, DNS to the listed
+`dnsServers`, and the `allowedNetworks` /
 `supervisionNetworks` CIDRs may leave the machine. Unlike the browser PAC, this
 cannot be bypassed by a direct IP connection, DoH, an alternative resolver, or a
 VPN to an arbitrary endpoint — enforcement is in the kernel and applies to every
-process, not just policy-aware browsers.
+process, not just policy-aware browsers. Existing connections receive no blanket
+exception: a connection opened before activation is dropped unless its destination
+is still allowed by the active profile.
 
 It is **disabled by default and experimental**: validate it in a lab on your exact
 image before production. Safeguards:
@@ -68,38 +76,15 @@ Requires root (the endpoint Service/Server component) and `nftables` +
 the exam-server CIDRs (domain-only allow-listing is not possible at the firewall
 layer — that is what the Windows PAC backend is for).
 
-## Windows firewall backend (experimental, opt-in)
+## Windows firewall backend
 
-`networkBackend: firewall` on Windows sets the Windows Defender Firewall default
-**outbound action to block** for all profiles and adds an allow-list of `dir=out`
-rules (named `VeyonExamModeEgress`) for `allowedNetworks` / `supervisionNetworks`
-and DNS (udp/tcp 53) to `dnsServers`. Like the Linux nftables backend, this cannot
-be bypassed by a direct IP connection, DoH, an alternative resolver, or a VPN —
-enforcement is in the firewall and applies to every process. It is applied **in
-addition to** the browser PAC (which still provides domain-level filtering), not
-instead of it.
-
-It is **disabled by default and experimental** — validate it in a lab on your
-exact image before production, and always supply the VDI transport and portal
-CIDRs in `supervisionNetworks`/`allowedNetworks` or the exam session itself will be
-cut. Safeguards mirror the Linux backend:
-
-* **Rules first, block last**: allow rules are added while the default is still
-  `allow`; the switch to `blockoutbound` is the final step, so a failed apply
-  leaves the machine *open* (loudly logged), never half-blocked. Any failure rolls
-  back the whole ruleset.
-* **Dead-man scheduled task**: a fixed-name task (`veyon-exammode-failsafe`)
-  restores the default outbound policy and deletes the rules at `leaseSeconds + 60`.
-  Each renewal pushes it back; if Veyon dies the task still restores connectivity.
-* **Startup cleanup**: a residual ruleset left by a crash is removed when the
-  service restarts, and the previous outbound policy is restored.
-
-Requires the endpoint Service/Server component (runs as SYSTEM) and `netsh` +
-`schtasks` on the image. The dead-man task's trigger time is formatted with the
-system locale (`schtasks` expectation); verify it arms correctly on your image's
-locale. Restoration targets the Windows out-of-box default
-(`blockinbound,allowoutbound`); if your image ships a non-default outbound policy,
-adjust it after an exam.
+`networkBackend: firewall` is currently **refused on Windows** with the capability
+`UNSUPPORTED_WFP_REQUIRED`. The former global-policy command implementation was
+removed: it could not restore a non-default policy exactly and its recovery task
+was locale-dependent. A production implementation must use a dedicated Windows
+Filtering Platform provider/sublayer with dynamic, transactionally committed
+filters and explicit VDI-control exceptions. Refusal is returned as `REJECTED`;
+the endpoint is never reported as isolated when no safe backend exists.
 
 ## Platform capabilities
 
@@ -109,21 +94,21 @@ adjust it after an exam.
 | Prevent application launch | Yes, IFEO | Yes, fanotify | No |
 | Site block list | PAC policies | `hosts` / firewall | `hosts` |
 | Site allow list | PAC policies | firewall (CIDR) | Refused |
-| Egress allow-list (CIDR) | firewall (experimental) | firewall (nftables) | No |
-| Crash-safe restoration | Registry/PAC backup + firewall dead-man | Marked `hosts` / nftables dead-man | Marked `hosts` section |
+| Egress allow-list (CIDR) | Refused pending WFP | firewall (nftables) | No |
+| Crash-safe restoration | Exact Registry/PAC backup + active-state journal | Marked `hosts` / nftables dead-man + active-state journal | Marked `hosts` section |
 
 ## Linux launch prevention (fanotify)
 
 On Linux, prevent-launch applications are enforced in the kernel via
-`fanotify` with `FAN_OPEN_EXEC_PERM`: every `execve` on the root filesystem is
+`fanotify` with `FAN_OPEN_EXEC_PERM`: every `execve` on executable mounts is
 submitted to a userspace permission decision, and a blocked binary is denied
 *before* it runs. Unlike a `PATH` shim or an `LD_PRELOAD` shim, this covers all
 launch paths — interactive shell, GUI launcher, absolute path, or a portable copy
 carrying the same file name — and cannot be bypassed by ignoring `PATH`.
 
 * **Privilege / kernel**: requires root (`CAP_SYS_ADMIN`) and kernel ≥ 5.0. If
-  unavailable, `startGuarding()` fails and the plugin falls back to the periodic
-  kill loop (logged); enforcement is never a hard failure.
+  unavailable, a requested prevent-launch rule fails the transaction. The
+  periodic kill loop remains defence in depth but is not reported as equivalent.
 * **Fail-safe**: matching is a deny-list with default-allow, so a path that cannot
   be resolved is allowed (the OS is never broken by unknown execs). If the Veyon
   process dies, the kernel closes the fanotify descriptor and pending execs are
@@ -178,8 +163,25 @@ ignored and logged. A versioned profile is rejected before endpoint state change
 when its revision is stale, its content changes without a revision increment, or
 its supplied digest does not match.
 
-The digest is an integrity checksum, not a digital signature. Authenticity still
-depends on Veyon's authenticated and encrypted control channel.
+The digest remains an integrity checksum. In `highSecurity` mode, authenticity is
+additionally enforced by RSA-SHA512 over a canonical payload containing the
+digest, operation, session identity, sequence, freshness window, required
+capabilities, and broker attestations. Public keys are loaded from Veyon's managed
+public-key directory. The last accepted sequence and the active normalized policy
+are atomically journaled with owner-only permissions, so a crash can resume an
+unexpired session without accepting a replay.
+
+Every start/stop produces a per-endpoint status reply: `PENDING`, `APPLIED`,
+`REJECTED`, `DEGRADED`, `STOPPED`, or `EXPIRED`, plus an error code, effective
+digest, capability map, backend results, session/sequence, and timestamp. The Web
+API feature-status route merges this detail with the ordinary `active` flag.
+
+IFEO and fanotify rules in this plugin match executable basenames and are exposed
+as `process.preventLaunch.basename`, not as strong application allow-listing. A
+`highSecurity` profile requesting process prevention must therefore include a
+signed `externalCapabilities.applicationControl: "ACTIVE"` attestation from a
+broker/image policy such as WDAC/AppLocker or Linux IMA. This prevents a renamed
+binary from being mistaken for a fully enforced application policy.
 
 ## Safe Exam Browser design influence
 

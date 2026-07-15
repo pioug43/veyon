@@ -303,3 +303,18 @@ FeatureUidList FeatureManager::activeFeatures( VeyonServerInterface& server ) co
 
 	return features;
 }
+
+
+
+QVariantMap FeatureManager::featureStatus( Feature::Uid featureUid,
+										   ComputerControlInterface::Pointer computerControlInterface ) const
+{
+	for( const auto& featureInterface : std::as_const( m_featurePluginInterfaces ) )
+	{
+		if( featureInterface->hasFeature( featureUid ) )
+		{
+			return featureInterface->featureStatus( featureUid, computerControlInterface );
+		}
+	}
+	return {};
+}

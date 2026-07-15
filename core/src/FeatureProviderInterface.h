@@ -190,6 +190,22 @@ public:
 		return false;
 	}
 
+	/*!
+	 * \brief Returns provider-specific status received for a remote feature
+	 *
+	 * The default keeps existing providers source-compatible. Providers with
+	 * transactional operations can expose PENDING/APPLIED/
+	 * REJECTED/DEGRADED details instead of making callers infer success from the
+	 * asynchronously refreshed active-feature list.
+	 */
+	virtual QVariantMap featureStatus( Feature::Uid featureUid,
+									 ComputerControlInterface::Pointer computerControlInterface ) const
+	{
+		Q_UNUSED(featureUid)
+		Q_UNUSED(computerControlInterface)
+		return {};
+	}
+
 protected:
 	void sendFeatureMessage(const FeatureMessage& message, const ComputerControlInterfaceList& computerControlInterfaces)
 	{

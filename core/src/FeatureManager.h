@@ -81,6 +81,8 @@ public:
 	void sendAsyncFeatureMessages(VeyonServerInterface& server, const MessageContext& messageContext) const;
 
 	FeatureUidList activeFeatures( VeyonServerInterface& server ) const;
+	QVariantMap featureStatus( Feature::Uid featureUid,
+						   ComputerControlInterface::Pointer computerControlInterface ) const;
 
 private:
 	FeatureList m_features;

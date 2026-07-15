@@ -184,7 +184,8 @@ private slots:
 
 		QVERIFY( ruleset.contains( QStringLiteral("policy drop") ) );			// fail-closed
 		QVERIFY( ruleset.contains( QStringLiteral("oif \"lo\" accept") ) );		// loopback
-		QVERIFY( ruleset.contains( QStringLiteral("ct state established,related accept") ) );
+		QVERIFY( ruleset.contains( QStringLiteral("ct state invalid drop") ) );
+		QVERIFY( ruleset.contains( QStringLiteral("ct state established,related accept") ) == false );
 		QVERIFY( ruleset.contains( QStringLiteral("ip daddr 10.0.0.0/24 accept") ) );
 		QVERIFY( ruleset.contains( QStringLiteral("ip daddr 192.168.50.0/24 accept") ) );	// supervision
 		QVERIFY( ruleset.contains( QStringLiteral("udp dport 53 accept") ) );	// DNS résolveur autorisé

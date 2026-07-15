@@ -25,9 +25,13 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QHash>
+#include <QMutex>
+#include <QSet>
 #include <QStringList>
 
 #include "ExamModeProfile.h"
+#include "ExamModeSession.h"
 #include "FeatureProviderInterface.h"
 
 class QTimer;
@@ -71,6 +75,22 @@ public:
 		AllowedNetworks,	// QStringList : CIDR autorisés en sortie (backend firewall)
 		DnsServers,			// QStringList : résolveurs DNS autorisés (backend firewall)
 		SupervisionNetworks,// QStringList : CIDR portail/master toujours autorisés
+		SessionId,			// QString : identifiant opaque de session d'examen
+		Sequence,			// quint64 : compteur strictement croissant (anti-rejeu)
+		IssuedAt,			// qint64 : epoch millisecondes
+		ExpiresAt,			// qint64 : epoch millisecondes
+		HighSecurity,		// bool : signature et capacités fortes obligatoires
+		RequiredCapabilities,// QStringList : contrôles obligatoires déclarés par le portail
+		ExternalCapabilities,// QVariantMap : contrôles VDI externes attestés par le portail
+		SigningKeyId,		// QString : clé publique Veyon autorisée
+		ProfileSignature,	// QByteArray/base64 : RSA-SHA512 sur la charge canonique
+		Status,
+		ErrorCode,
+		ErrorMessage,
+		EffectiveDigest,
+		Capabilities,
+		BackendResults,
+		Timestamp,
 	};
 	Q_ENUM(Argument)
 
@@ -120,19 +140,30 @@ public:
 							   const FeatureMessage& message ) override;
 
 	bool handleFeatureMessage( VeyonWorkerInterface& worker, const FeatureMessage& message ) override;
+	bool handleFeatureMessage( ComputerControlInterface::Pointer computerControlInterface,
+							   const FeatureMessage& message ) override;
+	void sendAsyncFeatureMessages( VeyonServerInterface& server,
+							   const MessageContext& messageContext ) override;
+	bool isFeatureActive( VeyonServerInterface& server, Feature::Uid featureUid ) const override;
+	QVariantMap featureStatus( Feature::Uid featureUid,
+						   ComputerControlInterface::Pointer computerControlInterface ) const override;
 
 private:
 	enum class FeatureCommand
 	{
 		StartExam,
 		StopExam,
+		ExamStatus,
 	};
 
 	bool startEnforcement( const ExamModeProfile::ProcessPolicy& processPolicy, const QStringList& sites,
 						   const QList<ExamModeProfile::UrlRule>& urlRules, const QString& sitesMode,
 						   const QString& defaultUrlAction, int leaseSeconds, const QString& profileId,
-						   qint64 profileRevision, const QString& expectedDigest );
+						   qint64 profileRevision, const QString& expectedDigest,
+						   const ExamModeProfile::NetworkPolicy& networkPolicy,
+						   const ExamModeSession::Envelope& envelope );
 	void stopEnforcement();
+	bool stopEnforcement( const ExamModeSession::Envelope& envelope );
 	void enforceTick();				// termine périodiquement les processus interdits
 	void auditRunningBlockedProcesses() const;	// journalise les processus interdits trouvés actifs
 	void killApplication( const QString& executable ) const;
@@ -152,7 +183,7 @@ private:
 	// systemd pour éviter de verrouiller la VM si le processus meurt.
 	bool applyLinuxFirewall();
 	void removeLinuxFirewall();
-	void armFirewallDeadMan( int seconds ) const;
+	bool armFirewallDeadMan( int seconds ) const;
 	void disarmFirewallDeadMan() const;
 	static QString firewallStateFile();
 	static QString firewallRulesetFile();
@@ -162,16 +193,11 @@ private:
 	void removeWindowsSiteFiltering();
 	bool writePacFile();
 	void cleanupLegacyWindowsState();
-	// Backend egress Windows (pare-feu Windows Defender, allow-list par CIDR) —
-	// parité avec le backend nftables Linux, robuste à l'IP directe / DoH / VPN.
-	// Expérimental, opt-in (networkBackend=firewall). Fail-closed. Restauration au
-	// stop/expiration/prochain démarrage du service ; dead-man planifié en secours.
+	// Le backend firewall Windows est refusé tant qu'une implémentation WFP avec
+	// transaction dynamique et restauration exacte n'est pas disponible.
 	bool applyWindowsFirewall();
 	void removeWindowsFirewall();
-	void armWindowsFirewallDeadMan( int seconds ) const;
-	void disarmWindowsFirewallDeadMan() const;
 	static QString windowsFirewallStateFile();
-	static QString windowsFirewallRestoreScript();
 	static QString pacFilePath();
 	static QString siteFilterStateFile();
 	static QString legacySiteFilterMarkerFile();
@@ -192,12 +218,29 @@ private:
 	static QString windowsImageName( const QString& executable );
 	static QString launchPreventionStateFile();
 	static bool isEndpointComponent();
+	ExamModeSession::Envelope envelopeFromMessage( const FeatureMessage& message ) const;
+	bool verifyEnvelopeSignature( const ExamModeSession::Envelope& envelope,
+							  const QString& operation, const QString& digest ) const;
+	QVariantMap localCapabilities( const ExamModeProfile::NetworkPolicy& networkPolicy ) const;
+	bool requiredCapabilitiesAvailable( const ExamModeSession::Envelope& envelope,
+									const QVariantMap& capabilities, QString* missing ) const;
+	void setStatus( const QString& status, const QString& errorCode = {}, const QString& errorMessage = {},
+					const QVariantMap& backendResults = {} );
+	FeatureMessage statusMessage() const;
+	bool verifyEnforcement();
+	static QString replayStateFile();
+	void loadReplayState();
+	void persistReplayState() const;
+	static QString activeStateFile();
+	void persistActiveState() const;
+	void recoverActiveState();
 
 	const Feature m_examModeFeature;
 	const FeatureList m_features;
 
 	QTimer* m_timer{nullptr};
 	QTimer* m_watchdog{nullptr};	// lève tout si le portail cesse de ré-appliquer (fail-safe)
+	QTimer* m_driftTimer{nullptr};
 	ExamModeLinuxExecGuard* m_execGuard{nullptr};	// prévention de lancement Linux (fanotify)
 	bool m_active{false};
 	QStringList m_blockedApps{};
@@ -215,6 +258,21 @@ private:
 	qint64 m_profileRevision{0};
 	QString m_profileDigest{};
 	int m_leaseSeconds{300};
+	QString m_sessionId{};
+	quint64 m_lastSequence{0};
+	qint64 m_sessionExpiresAtMs{0};
+	bool m_highSecurity{false};
+	QString m_status{QStringLiteral("IDLE")};
+	QString m_errorCode{};
+	QString m_errorMessage{};
+	QVariantMap m_capabilities{};
+	QVariantMap m_backendResults{};
+	qint64 m_statusTimestampMs{0};
+	QString m_statusSessionId{};
+	quint64 m_statusSequence{0};
+	mutable QMutex m_remoteStatusMutex;
+	QHash<const ComputerControlInterface*, QVariantMap> m_remoteStatuses;
+	QSet<const ComputerControlInterface*> m_trackedRemoteInterfaces;
 	bool m_hostsModified{false};
 	bool m_siteFilteringActive{false};
 	QString m_hostsSignature{};		// évite de réappliquer le filtrage réseau si la politique est inchangée

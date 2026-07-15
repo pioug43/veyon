@@ -77,8 +77,8 @@ ProcessPolicy resolveProcessRules( const QVariantList& rules, const QString& pla
 QList<UrlRule> normalizeUrlRules( const QVariantList& rules, QStringList* rejected = nullptr );
 QByteArray buildPac( const QList<UrlRule>& rules, RuleAction defaultAction );
 // Génère un ruleset nftables egress à politique « drop » : ne laisse sortir que
-// la loopback, les connexions établies, le DNS vers les résolveurs autorisés et
-// les réseaux explicitement autorisés (CIDR). Utilisé par le backend firewall.
+// la loopback, le DNS vers les résolveurs autorisés et les réseaux explicitement
+// autorisés (CIDR). Les connexions établies ne sont pas exemptées globalement.
 QByteArray buildNftablesRuleset( const QStringList& allowedNetworks, const QStringList& dnsServers,
 								 const QStringList& supervisionNetworks );
 QString profileDigest( const QString& profileId, qint64 revision, const ProcessPolicy& processPolicy,

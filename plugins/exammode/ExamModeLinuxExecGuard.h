@@ -29,6 +29,8 @@
 #include <QStringList>
 #include <QThread>
 
+#include <atomic>
+
 /**
  * Empêche le LANCEMENT d'exécutables sous Linux via fanotify FAN_OPEN_EXEC_PERM :
  * le noyau soumet chaque execve à une autorisation userspace. Contrairement à la
@@ -60,7 +62,9 @@ public:
 	void updateBlocked( const QStringList& blockedBasenames );
 	// Arrête proprement la surveillance et attend la fin du thread.
 	void stopGuarding();
-	bool isActive() const { return m_active; }
+	bool refreshMounts();
+	bool isActive() const { return m_active.load(); }
+	bool isHealthy() const { return m_healthy.load(); }
 
 protected:
 	void run() override;
@@ -73,5 +77,7 @@ private:
 	QSet<QString> m_blocked;
 	int m_fanotifyFd{-1};
 	int m_stopFd{-1};
-	bool m_active{false};
+	std::atomic_bool m_active{false};
+	std::atomic_bool m_healthy{false};
+	std::atomic_bool m_stopping{false};
 };

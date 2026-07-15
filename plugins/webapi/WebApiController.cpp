@@ -746,8 +746,12 @@ WebApiController::Response WebApiController::getFeatureStatus( const Request& re
 	const auto controlInterface = connection->controlInterface();
 
 	const auto result = controlInterface->activeFeatures().contains(Feature::Uid{feature});
-
-	return QVariantMap{ { k2s(Key::Active), result } };
+	QVariantMap status;
+	runInCoreThread([&] {
+		status = VeyonCore::featureManager().featureStatus(Feature::Uid{feature}, controlInterface);
+	});
+	status.insert(k2s(Key::Active), result);
+	return status;
 }
 
 

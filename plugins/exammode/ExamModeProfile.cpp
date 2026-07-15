@@ -165,8 +165,10 @@ QByteArray ExamModeProfile::buildNftablesRuleset( const QStringList& allowedNetw
 												  const QStringList& dnsServers,
 												  const QStringList& supervisionNetworks )
 {
-	// Politique egress « drop » : seule sort la loopback, les connexions déjà
-	// établies, le DNS vers les résolveurs autorisés et les réseaux autorisés.
+	// Politique egress « drop » : seule sort la loopback, le DNS vers les
+	// résolveurs autorisés et les réseaux autorisés. Ne jamais accepter globalement
+	// established/related : une connexion interdite ouverte avant l'examen
+	// survivrait à l'activation et contournerait l'allow-list.
 	// Bloque donc IP directe hors liste, DoH vers résolveur arbitraire, VPN vers
 	// endpoint arbitraire, DNS alternatif — contournements impossibles au niveau
 	// navigateur. Table dédiée pour un flush sûr et idempotent.
@@ -202,7 +204,7 @@ QByteArray ExamModeProfile::buildNftablesRuleset( const QStringList& allowedNetw
 		"  chain output {\n"
 		"    type filter hook output priority 0; policy drop;\n"
 		"    oif \"lo\" accept\n"
-		"    ct state established,related accept\n"
+		"    ct state invalid drop\n"
 		"%1\n"
 		"%2\n"
 		"  }\n"

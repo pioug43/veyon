@@ -25,6 +25,9 @@
 #include "ExamModeLinuxExecGuard.h"
 #include "VeyonCore.h"
 
+#include <QFile>
+#include <QSet>
+
 #if defined(Q_OS_LINUX)
 #include <cerrno>
 #include <cstring>
@@ -34,6 +37,58 @@
 #include <sys/eventfd.h>
 #include <sys/fanotify.h>
 #include <linux/limits.h>
+#endif
+
+
+#if defined(Q_OS_LINUX)
+namespace
+{
+
+QString decodeMountPath( QString path )
+{
+	path.replace( QStringLiteral("\\040"), QStringLiteral(" ") );
+	path.replace( QStringLiteral("\\011"), QStringLiteral("\t") );
+	path.replace( QStringLiteral("\\012"), QStringLiteral("\n") );
+	path.replace( QStringLiteral("\\134"), QStringLiteral("\\") );
+	return path;
+}
+
+
+QStringList executableMounts()
+{
+	QFile file( QStringLiteral("/proc/self/mountinfo") );
+	if( file.open( QIODevice::ReadOnly | QIODevice::Text ) == false )
+	{
+		return { QStringLiteral("/") };
+	}
+	const QSet<QString> pseudoFilesystems{
+		QStringLiteral("proc"), QStringLiteral("sysfs"), QStringLiteral("devtmpfs"),
+		QStringLiteral("devpts"), QStringLiteral("cgroup"), QStringLiteral("cgroup2"),
+		QStringLiteral("securityfs"), QStringLiteral("tracefs"), QStringLiteral("debugfs"),
+		QStringLiteral("pstore"), QStringLiteral("mqueue"), QStringLiteral("fusectl"),
+		QStringLiteral("configfs"),
+	};
+	QSet<QString> mounts{ QStringLiteral("/") };
+	while( file.atEnd() == false )
+	{
+		const auto line = QString::fromUtf8( file.readLine() ).trimmed();
+		const auto separator = line.indexOf( QStringLiteral(" - ") );
+		if( separator < 0 ) { continue; }
+		const auto left = line.left( separator ).split( QLatin1Char(' '), Qt::SkipEmptyParts );
+		const auto right = line.mid( separator + 3 ).split( QLatin1Char(' '), Qt::SkipEmptyParts );
+		if( left.size() < 6 || right.isEmpty() || pseudoFilesystems.contains( right.first() ) ||
+			left.at( 5 ).split( QLatin1Char(',') ).contains( QStringLiteral("noexec") ) )
+		{
+			continue;
+		}
+		mounts.insert( decodeMountPath( left.at( 4 ) ) );
+	}
+	auto result = mounts.values();
+	result.sort();
+	return result;
+}
+
+}
 #endif
 
 
@@ -91,10 +146,14 @@ void ExamModeLinuxExecGuard::updateBlocked( const QStringList& blockedBasenames 
 
 bool ExamModeLinuxExecGuard::startGuarding( const QStringList& blockedBasenames )
 {
-	if( m_active )
+	if( m_active.load() )
 	{
 		updateBlocked( blockedBasenames );
 		return true;
+	}
+	if( m_fanotifyFd >= 0 || m_stopFd >= 0 )
+	{
+		stopGuarding(); // nettoie les descripteurs d'une boucle terminée en erreur
 	}
 
 	updateBlocked( blockedBasenames );
@@ -108,14 +167,32 @@ bool ExamModeLinuxExecGuard::startGuarding( const QStringList& blockedBasenames 
 		return false;
 	}
 
-	// Marque tout le système de fichiers racine pour les execve. FAN_MARK_FILESYSTEM
-	// (kernel >= 4.20) couvre l'ensemble des fichiers du FS ; repli sur FAN_MARK_MOUNT.
-	if( fanotify_mark( m_fanotifyFd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
-					   FAN_OPEN_EXEC_PERM, AT_FDCWD, "/" ) < 0 &&
-		fanotify_mark( m_fanotifyFd, FAN_MARK_ADD | FAN_MARK_MOUNT,
-					   FAN_OPEN_EXEC_PERM, AT_FDCWD, "/" ) < 0 )
+	// Une marque sur / ne couvre pas les systèmes de fichiers montés dessous
+	// (volumes applicatifs, /home séparé, images VDI). Marquer chaque montage
+	// exécutable ferme ce contournement. L'échec sur / est fatal ; les montages
+	// apparus ensuite sont vérifiés par le contrôle de dérive de l'appelant.
+	bool rootMarked = false;
+	int markedMounts = 0;
+	for( const auto& mount : executableMounts() )
 	{
-		vWarning() << "ExamMode: fanotify_mark a échoué:" << strerror( errno );
+		const auto nativePath = QFile::encodeName( mount );
+		const bool marked = fanotify_mark( m_fanotifyFd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
+			FAN_OPEN_EXEC_PERM, AT_FDCWD, nativePath.constData() ) == 0 ||
+			fanotify_mark( m_fanotifyFd, FAN_MARK_ADD | FAN_MARK_MOUNT,
+				FAN_OPEN_EXEC_PERM, AT_FDCWD, nativePath.constData() ) == 0;
+		if( marked )
+		{
+			++markedMounts;
+			rootMarked = rootMarked || mount == QStringLiteral("/");
+		}
+		else
+		{
+			vWarning() << "ExamMode: montage fanotify non couvert" << mount << strerror( errno );
+		}
+	}
+	if( rootMarked == false )
+	{
+		vWarning() << "ExamMode: fanotify_mark de / a échoué:" << strerror( errno );
 		close( m_fanotifyFd );
 		m_fanotifyFd = -1;
 		return false;
@@ -129,9 +206,11 @@ bool ExamModeLinuxExecGuard::startGuarding( const QStringList& blockedBasenames 
 		return false;
 	}
 
+	m_stopping = false;
 	m_active = true;
+	m_healthy = true;
 	start();
-	vInfo() << "ExamMode: prévention de lancement Linux active (fanotify FAN_OPEN_EXEC_PERM)";
+	vInfo() << "ExamMode: prévention de lancement Linux active sur" << markedMounts << "montage(s)";
 	return true;
 }
 
@@ -255,17 +334,53 @@ void ExamModeLinuxExecGuard::run()
 			meta = FAN_EVENT_NEXT( meta, remaining );
 		}
 	}
+
+	// Un retour inattendu de la boucle signifie que la garantie noyau est perdue.
+	// Publier l'état avant de quitter permet au contrôle de dérive de réagir.
+	m_healthy = false;
+	m_active = false;
+	if( m_stopping.load() == false )
+	{
+		vWarning() << "ExamMode: garde fanotify interrompue de façon inattendue";
+	}
+}
+
+
+
+bool ExamModeLinuxExecGuard::refreshMounts()
+{
+	if( m_fanotifyFd < 0 || m_active.load() == false )
+	{
+		return false;
+	}
+	bool rootMarked = false;
+	for( const auto& mount : executableMounts() )
+	{
+		const auto nativePath = QFile::encodeName( mount );
+		const bool marked = fanotify_mark( m_fanotifyFd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
+			FAN_OPEN_EXEC_PERM, AT_FDCWD, nativePath.constData() ) == 0 ||
+			fanotify_mark( m_fanotifyFd, FAN_MARK_ADD | FAN_MARK_MOUNT,
+				FAN_OPEN_EXEC_PERM, AT_FDCWD, nativePath.constData() ) == 0;
+		rootMarked = rootMarked || ( mount == QStringLiteral("/") && marked );
+	}
+	if( rootMarked == false )
+	{
+		m_healthy = false;
+	}
+	return rootMarked;
 }
 
 
 
 void ExamModeLinuxExecGuard::stopGuarding()
 {
-	if( m_active == false )
+	if( m_active.load() == false && isRunning() == false && m_fanotifyFd < 0 && m_stopFd < 0 )
 	{
 		return;
 	}
+	m_stopping = true;
 	m_active = false;
+	m_healthy = false;
 
 	if( m_stopFd >= 0 )
 	{
@@ -286,6 +401,7 @@ void ExamModeLinuxExecGuard::stopGuarding()
 		close( m_stopFd );
 		m_stopFd = -1;
 	}
+	m_stopping = false;
 }
 
 #else  // plateformes non Linux : non-op
@@ -296,6 +412,11 @@ bool ExamModeLinuxExecGuard::startGuarding( const QStringList& blockedBasenames 
 	return false;
 }
 
+bool ExamModeLinuxExecGuard::refreshMounts()
+{
+	return false;
+}
+
 void ExamModeLinuxExecGuard::run()
 {
 }
@@ -303,6 +424,7 @@ void ExamModeLinuxExecGuard::run()
 void ExamModeLinuxExecGuard::stopGuarding()
 {
 	m_active = false;
+	m_healthy = false;
 }
 
 #endif

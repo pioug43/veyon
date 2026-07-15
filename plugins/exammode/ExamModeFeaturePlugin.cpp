@@ -29,17 +29,25 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QLocale>
+#include <QMutexLocker>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QStandardPaths>
 #include <QTimer>
+#include <QUuid>
 
+#include <limits>
+
+#include "CryptoCore.h"
 #include "ExamModeFeaturePlugin.h"
 #include "ExamModeLinuxExecGuard.h"
 #include "ExamModeProfile.h"
+#include "ExamModeSession.h"
+#include "ExamModeWindowsNative.h"
 #include "FeatureMessage.h"
+#include "Filesystem.h"
 #include "VeyonCore.h"
 #include "VeyonServerInterface.h"
 
@@ -56,7 +64,6 @@ static constexpr int MaximumLeaseSeconds = 60 * 60;
 namespace
 {
 
-#if defined(Q_OS_WIN)
 bool writeJsonFile( const QString& path, const QJsonObject& object )
 {
 	QDir().mkpath( QFileInfo( path ).absolutePath() );
@@ -65,12 +72,27 @@ bool writeJsonFile( const QString& path, const QJsonObject& object )
 	{
 		return false;
 	}
+#if !defined(Q_OS_WIN)
+	if( file.setPermissions( QFileDevice::ReadOwner | QFileDevice::WriteOwner ) == false )
+	{
+		file.cancelWriting();
+		return false;
+	}
+#endif
 	if( file.write( QJsonDocument( object ).toJson( QJsonDocument::Compact ) ) < 0 )
 	{
 		file.cancelWriting();
 		return false;
 	}
-	return file.commit();
+	if( file.commit() == false )
+	{
+		return false;
+	}
+#if defined(Q_OS_WIN)
+	return ExamModeWindowsNative::restrictFileToAdministratorsAndSystem( path );
+#else
+	return true;
+#endif
 }
 
 
@@ -85,23 +107,6 @@ QJsonObject readJsonFile( const QString& path )
 	const auto document = QJsonDocument::fromJson( file.readAll(), &error );
 	return error.error == QJsonParseError::NoError && document.isObject() ? document.object() : QJsonObject{};
 }
-
-
-// Lance un utilitaire (netsh/schtasks) sans shell et renvoie true sur code 0.
-// La stderr éventuelle est renvoyée pour journalisation.
-bool runProcessSucceeds( const QString& program, const QStringList& arguments,
-						 QByteArray* standardError = nullptr, int timeoutMs = 8000 )
-{
-	QProcess process;
-	process.start( program, arguments );
-	const bool finished = process.waitForStarted( 3000 ) && process.waitForFinished( timeoutMs );
-	if( standardError )
-	{
-		*standardError = process.readAllStandardError();
-	}
-	return finished && process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
-}
-#endif
 
 }
 
@@ -125,6 +130,18 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 	// Server à l'ouverture de session) — jamais sur le Master (poste enseignant).
 	if( isEndpointComponent() )
 	{
+		loadReplayState();
+		const auto recoverableState = readJsonFile( activeStateFile() );
+		const auto recoverableUntil = recoverableState.value(
+			QStringLiteral("expiresAtMs") ).toVariant().toLongLong();
+		if( recoverableState.value( QStringLiteral("version") ).toInt() == 1 &&
+			recoverableUntil > QDateTime::currentMSecsSinceEpoch() )
+		{
+			vInfo() << "ExamMode: état actif non expiré détecté; reprise transactionnelle programmée";
+			QTimer::singleShot( 0, this, &ExamModeFeaturePlugin::recoverActiveState );
+			return;
+		}
+		QFile::remove( activeStateFile() );
 		if( removeHostsSection() )
 		{
 			flushDnsCache();
@@ -202,9 +219,18 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 		const auto allowedNetworks = arguments.value( argToString( Argument::AllowedNetworks ) ).toStringList();
 		const auto dnsServers = arguments.value( argToString( Argument::DnsServers ) ).toStringList();
 		const auto supervisionNetworks = arguments.value( argToString( Argument::SupervisionNetworks ) ).toStringList();
+		const auto sessionId = arguments.value( argToString( Argument::SessionId ) ).toString();
+		const auto sequence = arguments.value( argToString( Argument::Sequence ) ).toULongLong();
+		const auto issuedAt = arguments.value( argToString( Argument::IssuedAt ) ).toLongLong();
+		const auto expiresAt = arguments.value( argToString( Argument::ExpiresAt ) ).toLongLong();
+		const auto highSecurity = arguments.value( argToString( Argument::HighSecurity ) ).toBool();
+		const auto requiredCapabilities = arguments.value( argToString( Argument::RequiredCapabilities ) ).toStringList();
+		const auto externalCapabilities = arguments.value( argToString( Argument::ExternalCapabilities ) ).toMap();
+		const auto signingKeyId = arguments.value( argToString( Argument::SigningKeyId ) ).toString();
+		const auto profileSignature = arguments.value( argToString( Argument::ProfileSignature ) );
 
-		sendFeatureMessage( FeatureMessage{ featureUid, FeatureCommand::StartExam }
-							.addArgument( Argument::BlockedApps, apps )
+		FeatureMessage outbound{ featureUid, FeatureCommand::StartExam };
+		outbound.addArgument( Argument::BlockedApps, apps )
 							.addArgument( Argument::Sites, sites )
 							.addArgument( Argument::SitesMode, sitesMode )
 							.addArgument( Argument::LeaseSeconds, leaseSeconds )
@@ -221,14 +247,80 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 							.addArgument( Argument::NetworkBackend, networkBackend )
 							.addArgument( Argument::AllowedNetworks, allowedNetworks )
 							.addArgument( Argument::DnsServers, dnsServers )
-							.addArgument( Argument::SupervisionNetworks, supervisionNetworks ),
-							computerControlInterfaces );
+							.addArgument( Argument::SupervisionNetworks, supervisionNetworks )
+							.addArgument( Argument::SessionId, sessionId )
+							.addArgument( Argument::Sequence, sequence )
+							.addArgument( Argument::IssuedAt, issuedAt )
+							.addArgument( Argument::ExpiresAt, expiresAt )
+							.addArgument( Argument::HighSecurity, highSecurity )
+							.addArgument( Argument::RequiredCapabilities, requiredCapabilities )
+							.addArgument( Argument::ExternalCapabilities, externalCapabilities )
+							.addArgument( Argument::SigningKeyId, signingKeyId )
+							.addArgument( Argument::ProfileSignature, profileSignature );
+		{
+			QMutexLocker locker( &m_remoteStatusMutex );
+			for( const auto& controlInterface : computerControlInterfaces )
+			{
+				const auto rawInterface = controlInterface.data();
+				if( m_trackedRemoteInterfaces.contains( rawInterface ) == false )
+				{
+					m_trackedRemoteInterfaces.insert( rawInterface );
+					connect( rawInterface, &QObject::destroyed, this, [this, rawInterface]() {
+						QMutexLocker statusLocker( &m_remoteStatusMutex );
+						m_remoteStatuses.remove( rawInterface );
+						m_trackedRemoteInterfaces.remove( rawInterface );
+					} );
+				}
+				m_remoteStatuses.insert( controlInterface.data(), QVariantMap{
+					{ QStringLiteral("status"), QStringLiteral("PENDING") },
+					{ QStringLiteral("sessionId"), sessionId },
+					{ QStringLiteral("sequence"), sequence },
+					{ QStringLiteral("timestamp"), QDateTime::currentMSecsSinceEpoch() },
+				} );
+			}
+		}
+		sendFeatureMessage( outbound, computerControlInterfaces );
 		return true;
 	}
 
 	if( operation == Operation::Stop )
 	{
-		sendFeatureMessage( FeatureMessage{ featureUid, FeatureCommand::StopExam }, computerControlInterfaces );
+		const auto now = QDateTime::currentMSecsSinceEpoch();
+		const auto sessionId = arguments.value( argToString( Argument::SessionId ) ).toString();
+		const auto sequence = arguments.value( argToString( Argument::Sequence ) ).toULongLong();
+		FeatureMessage outbound{ featureUid, FeatureCommand::StopExam };
+		outbound.addArgument( Argument::SessionId, sessionId )
+			.addArgument( Argument::Sequence, sequence )
+			.addArgument( Argument::IssuedAt, arguments.value( argToString( Argument::IssuedAt ), now ) )
+			.addArgument( Argument::ExpiresAt, arguments.value( argToString( Argument::ExpiresAt ), now + 300000 ) )
+			.addArgument( Argument::HighSecurity, arguments.value( argToString( Argument::HighSecurity ) ) )
+			.addArgument( Argument::RequiredCapabilities, arguments.value( argToString( Argument::RequiredCapabilities ) ) )
+			.addArgument( Argument::ExternalCapabilities, arguments.value( argToString( Argument::ExternalCapabilities ) ) )
+			.addArgument( Argument::SigningKeyId, arguments.value( argToString( Argument::SigningKeyId ) ) )
+			.addArgument( Argument::ProfileSignature, arguments.value( argToString( Argument::ProfileSignature ) ) );
+		{
+			QMutexLocker locker( &m_remoteStatusMutex );
+			for( const auto& controlInterface : computerControlInterfaces )
+			{
+				const auto rawInterface = controlInterface.data();
+				if( m_trackedRemoteInterfaces.contains( rawInterface ) == false )
+				{
+					m_trackedRemoteInterfaces.insert( rawInterface );
+					connect( rawInterface, &QObject::destroyed, this, [this, rawInterface]() {
+						QMutexLocker statusLocker( &m_remoteStatusMutex );
+						m_remoteStatuses.remove( rawInterface );
+						m_trackedRemoteInterfaces.remove( rawInterface );
+					} );
+				}
+				m_remoteStatuses.insert( controlInterface.data(), QVariantMap{
+					{ QStringLiteral("status"), QStringLiteral("PENDING") },
+					{ QStringLiteral("sessionId"), sessionId },
+					{ QStringLiteral("sequence"), sequence },
+					{ QStringLiteral("timestamp"), now },
+				} );
+			}
+		}
+		sendFeatureMessage( outbound, computerControlInterfaces );
 		return true;
 	}
 
@@ -241,9 +333,6 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 												  const MessageContext& messageContext,
 												  const FeatureMessage& message )
 {
-	Q_UNUSED(server)
-	Q_UNUSED(messageContext)
-
 	if( message.featureUid() != m_examModeFeature.uid() )
 	{
 		return false;
@@ -256,6 +345,9 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 	{
 	case FeatureCommand::StartExam:
 	{
+		const auto envelope = envelopeFromMessage( message );
+		m_statusSessionId = envelope.sessionId;
+		m_statusSequence = envelope.sequence;
 		auto applications = message.argument( Argument::BlockedApps ).toStringList();
 		QString platform;
 #if defined(Q_OS_WIN)
@@ -287,22 +379,31 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 		}
 		processRules.append( message.argument( Argument::ProcessRules ).toList() );
 
-		// Backend réseau : « hosts » (défaut) ou « firewall » (Linux, nftables).
-		// Renseigné en membres avant startEnforcement (utilisé par applySiteFiltering).
+		// Construire toute la politique candidate sans toucher à l'état actif. La
+		// transaction ne publie ces valeurs qu'après validation de l'enveloppe.
 		bool validBackend = false;
-		m_networkBackend = ExamModeProfile::networkBackendFromString(
+		auto networkBackend = ExamModeProfile::networkBackendFromString(
 			message.argument( Argument::NetworkBackend ).toString(), &validBackend );
 		if( validBackend == false )
 		{
-			vWarning() << "ExamMode: backend réseau invalide — utilisation de hosts";
-			m_networkBackend = ExamModeProfile::NetworkBackend::Hosts;
+			vWarning() << "ExamMode: backend réseau invalide — profil refusé";
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_NETWORK_BACKEND"),
+				QStringLiteral("Unknown network backend") );
+			return server.sendFeatureMessageReply( messageContext, statusMessage() );
 		}
-		m_allowedNetworks = ExamModeProfile::normalizeNetworks(
-			message.argument( Argument::AllowedNetworks ).toStringList() );
-		m_dnsServers = ExamModeProfile::normalizeNetworks(
-			message.argument( Argument::DnsServers ).toStringList() );
-		m_supervisionNetworks = ExamModeProfile::normalizeNetworks(
-			message.argument( Argument::SupervisionNetworks ).toStringList() );
+		QStringList rejectedNetworks;
+		ExamModeProfile::NetworkPolicy networkPolicy{
+			networkBackend,
+			ExamModeProfile::normalizeNetworks( message.argument( Argument::AllowedNetworks ).toStringList(), &rejectedNetworks ),
+			ExamModeProfile::normalizeNetworks( message.argument( Argument::DnsServers ).toStringList(), &rejectedNetworks ),
+			ExamModeProfile::normalizeNetworks( message.argument( Argument::SupervisionNetworks ).toStringList(), &rejectedNetworks ),
+		};
+		if( rejectedNetworks.isEmpty() == false )
+		{
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_NETWORK"),
+				QStringLiteral("One or more network entries are invalid") );
+			return server.sendFeatureMessageReply( messageContext, statusMessage() );
+		}
 		QStringList rejectedProcesses;
 		const auto processPolicy = ExamModeProfile::resolveProcessRules( processRules, platform, &rejectedProcesses );
 		QStringList rejectedUrls;
@@ -310,11 +411,15 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 			message.argument( Argument::UrlRules ).toList(), &rejectedUrls );
 		if( rejectedProcesses.isEmpty() == false )
 		{
-			vWarning() << "ExamMode:" << rejectedProcesses.size() << "regle(s) processus invalide(s) ignoree(s)";
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_PROCESS_RULE"),
+				QStringLiteral("One or more process rules are invalid") );
+			return server.sendFeatureMessageReply( messageContext, statusMessage() );
 		}
 		if( rejectedUrls.isEmpty() == false )
 		{
-			vWarning() << "ExamMode:" << rejectedUrls.size() << "regle(s) URL invalide(s) ignoree(s)";
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_URL_RULE"),
+				QStringLiteral("One or more URL rules are invalid") );
+			return server.sendFeatureMessageReply( messageContext, statusMessage() );
 		}
 		// le message est traité même si le profil est refusé (validation) :
 		// on retourne toujours true pour ne pas le laisser paraître non géré.
@@ -325,15 +430,17 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 					message.argument( Argument::LeaseSeconds ).toInt() : DefaultLeaseSeconds,
 				message.argument( Argument::ProfileId ).toString(),
 				message.argument( Argument::ProfileRevision ).toLongLong(),
-				message.argument( Argument::ProfileDigest ).toString() ) == false )
+				message.argument( Argument::ProfileDigest ).toString(), networkPolicy, envelope ) == false )
 		{
 			vWarning() << "ExamMode: profil StartExam refusé — restrictions inchangées";
 		}
-		return true;
+		return server.sendFeatureMessageReply( messageContext, statusMessage() );
 	}
-
 	case FeatureCommand::StopExam:
-		stopEnforcement();
+		stopEnforcement( envelopeFromMessage( message ) );
+		return server.sendFeatureMessageReply( messageContext, statusMessage() );
+
+	case FeatureCommand::ExamStatus:
 		return true;
 
 	default:
@@ -356,12 +463,219 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonWorkerInterface& worker, 
 
 
 
+bool ExamModeFeaturePlugin::handleFeatureMessage( ComputerControlInterface::Pointer computerControlInterface,
+												  const FeatureMessage& message )
+{
+	if( message.featureUid() != m_examModeFeature.uid() ||
+		message.command<FeatureCommand>() != FeatureCommand::ExamStatus )
+	{
+		return false;
+	}
+	QVariantMap status{
+		{ QStringLiteral("status"), message.argument( Argument::Status ) },
+		{ QStringLiteral("errorCode"), message.argument( Argument::ErrorCode ) },
+		{ QStringLiteral("errorMessage"), message.argument( Argument::ErrorMessage ) },
+		{ QStringLiteral("effectiveDigest"), message.argument( Argument::EffectiveDigest ) },
+		{ QStringLiteral("capabilities"), message.argument( Argument::Capabilities ) },
+		{ QStringLiteral("backendResults"), message.argument( Argument::BackendResults ) },
+		{ QStringLiteral("sessionId"), message.argument( Argument::SessionId ) },
+		{ QStringLiteral("sequence"), message.argument( Argument::Sequence ) },
+		{ QStringLiteral("timestamp"), message.argument( Argument::Timestamp ) },
+	};
+	QMutexLocker locker( &m_remoteStatusMutex );
+	const auto rawInterface = computerControlInterface.data();
+	if( m_trackedRemoteInterfaces.contains( rawInterface ) == false )
+	{
+		m_trackedRemoteInterfaces.insert( rawInterface );
+		connect( rawInterface, &QObject::destroyed, this, [this, rawInterface]() {
+			QMutexLocker statusLocker( &m_remoteStatusMutex );
+			m_remoteStatuses.remove( rawInterface );
+			m_trackedRemoteInterfaces.remove( rawInterface );
+		} );
+	}
+	m_remoteStatuses.insert( computerControlInterface.data(), status );
+	return true;
+}
+
+
+
+QVariantMap ExamModeFeaturePlugin::featureStatus( Feature::Uid featureUid,
+												  ComputerControlInterface::Pointer computerControlInterface ) const
+{
+	if( featureUid != m_examModeFeature.uid() )
+	{
+		return {};
+	}
+	QMutexLocker locker( &m_remoteStatusMutex );
+	return m_remoteStatuses.value( computerControlInterface.data(), QVariantMap{
+		{ QStringLiteral("status"), QStringLiteral("UNKNOWN") },
+	} );
+}
+
+
+
+void ExamModeFeaturePlugin::sendAsyncFeatureMessages( VeyonServerInterface& server,
+												   const MessageContext& messageContext )
+{
+	if( isEndpointComponent() )
+	{
+		server.sendFeatureMessageReply( messageContext, statusMessage() );
+	}
+}
+
+
+
+bool ExamModeFeaturePlugin::isFeatureActive( VeyonServerInterface& server, Feature::Uid featureUid ) const
+{
+	Q_UNUSED(server)
+	return featureUid == m_examModeFeature.uid() && m_active;
+}
+
+
+
+ExamModeSession::Envelope ExamModeFeaturePlugin::envelopeFromMessage( const FeatureMessage& message ) const
+{
+	ExamModeSession::Envelope envelope;
+	envelope.sessionId = message.argument( Argument::SessionId ).toString().trimmed();
+	envelope.sequence = message.argument( Argument::Sequence ).toULongLong();
+	envelope.issuedAtMs = message.argument( Argument::IssuedAt ).toLongLong();
+	envelope.expiresAtMs = message.argument( Argument::ExpiresAt ).toLongLong();
+	envelope.highSecurity = message.argument( Argument::HighSecurity ).toBool();
+	envelope.signingKeyId = message.argument( Argument::SigningKeyId ).toString().trimmed();
+	envelope.requiredCapabilities = message.argument( Argument::RequiredCapabilities ).toStringList();
+	envelope.externalCapabilities = message.argument( Argument::ExternalCapabilities ).toMap();
+	const auto encodedSignature = message.argument( Argument::ProfileSignature ).toByteArray().trimmed();
+	envelope.signature = QByteArray::fromBase64( encodedSignature );
+	return envelope;
+}
+
+
+
+bool ExamModeFeaturePlugin::verifyEnvelopeSignature( const ExamModeSession::Envelope& envelope,
+													 const QString& operation, const QString& digest ) const
+{
+	if( envelope.signature.isEmpty() )
+	{
+		return envelope.highSecurity == false;
+	}
+	static const QRegularExpression KeyIdPattern( QStringLiteral("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$") );
+	if( KeyIdPattern.match( envelope.signingKeyId ).hasMatch() == false )
+	{
+		return false;
+	}
+	const auto keyPath = VeyonCore::filesystem().publicKeyPath( envelope.signingKeyId );
+	CryptoCore::PublicKey publicKey( keyPath );
+	if( publicKey.isNull() || publicKey.isPublic() == false || envelope.signature.size() > 8192 )
+	{
+		vWarning() << "ExamMode: impossible de charger la clé de signature" << keyPath;
+		return false;
+	}
+	return publicKey.verifyMessage( ExamModeSession::canonicalPayload( envelope, operation, digest ),
+		envelope.signature, CryptoCore::DefaultSignatureAlgorithm );
+}
+
+
+
+QVariantMap ExamModeFeaturePlugin::localCapabilities( const ExamModeProfile::NetworkPolicy& networkPolicy ) const
+{
+	QVariantMap capabilities{
+		{ QStringLiteral("process.terminate"), QStringLiteral("SUPPORTED") },
+		{ QStringLiteral("screenLock"), QStringLiteral("EXTERNAL_POLICY_REQUIRED") },
+		{ QStringLiteral("clipboard.block"), QStringLiteral("EXTERNAL_POLICY_REQUIRED") },
+		{ QStringLiteral("printing.block"), QStringLiteral("EXTERNAL_POLICY_REQUIRED") },
+		{ QStringLiteral("usb.block"), QStringLiteral("EXTERNAL_POLICY_REQUIRED") },
+		{ QStringLiteral("remoteDesktop.block"), QStringLiteral("EXTERNAL_POLICY_REQUIRED") },
+		{ QStringLiteral("applicationControl"), QStringLiteral("EXTERNAL_POLICY_REQUIRED") },
+	};
+#if defined(Q_OS_WIN)
+	capabilities.insert( QStringLiteral("process.preventLaunch"), QStringLiteral("BASENAME_ONLY") );
+	capabilities.insert( QStringLiteral("process.preventLaunch.basename"), QStringLiteral("SUPPORTED") );
+	capabilities.insert( QStringLiteral("network.domainFilter"), QStringLiteral("BROWSER_POLICY") );
+	capabilities.insert( QStringLiteral("network.firewall"), QStringLiteral("UNSUPPORTED_WFP_REQUIRED") );
+#elif defined(Q_OS_LINUX)
+	capabilities.insert( QStringLiteral("process.preventLaunch"), QStringLiteral("BASENAME_ONLY") );
+	capabilities.insert( QStringLiteral("process.preventLaunch.basename"), QStringLiteral("SUPPORTED") );
+	capabilities.insert( QStringLiteral("network.domainFilter"), QStringLiteral("HOSTS_BLOCKLIST_ONLY") );
+	const bool firewallTools = QStandardPaths::findExecutable( QStringLiteral("nft") ).isEmpty() == false &&
+		QStandardPaths::findExecutable( QStringLiteral("systemd-run") ).isEmpty() == false &&
+		QStandardPaths::findExecutable( QStringLiteral("systemctl") ).isEmpty() == false;
+	capabilities.insert( QStringLiteral("network.firewall"),
+		firewallTools ? QStringLiteral("SUPPORTED") : QStringLiteral("UNSUPPORTED_DEPENDENCY") );
+#else
+	capabilities.insert( QStringLiteral("process.preventLaunch"), QStringLiteral("UNSUPPORTED") );
+	capabilities.insert( QStringLiteral("network.domainFilter"), QStringLiteral("HOSTS_BLOCKLIST_ONLY") );
+	capabilities.insert( QStringLiteral("network.firewall"), QStringLiteral("UNSUPPORTED") );
+#endif
+	capabilities.insert( QStringLiteral("network.requestedBackend"),
+		networkPolicy.backend == ExamModeProfile::NetworkBackend::Firewall ?
+			QStringLiteral("firewall") : QStringLiteral("hosts") );
+	return capabilities;
+}
+
+
+
+bool ExamModeFeaturePlugin::requiredCapabilitiesAvailable( const ExamModeSession::Envelope& envelope,
+														const QVariantMap& capabilities, QString* missing ) const
+{
+	auto effective = capabilities;
+	for( auto it = envelope.externalCapabilities.constBegin(); it != envelope.externalCapabilities.constEnd(); ++it )
+	{
+		if( it.value().toString().compare( QStringLiteral("ACTIVE"), Qt::CaseInsensitive ) == 0 )
+		{
+			effective.insert( it.key(), QStringLiteral("EXTERNAL_ATTESTED") );
+		}
+	}
+	for( const auto& required : envelope.requiredCapabilities )
+	{
+		const auto value = effective.value( required ).toString();
+		if( value != QStringLiteral("SUPPORTED") && value != QStringLiteral("EXTERNAL_ATTESTED") &&
+			value != QStringLiteral("ACTIVE") )
+		{
+			if( missing ) { *missing = required; }
+			return false;
+		}
+	}
+	return true;
+}
+
+
+
+void ExamModeFeaturePlugin::setStatus( const QString& status, const QString& errorCode,
+									  const QString& errorMessage, const QVariantMap& backendResults )
+{
+	m_status = status;
+	m_errorCode = errorCode;
+	m_errorMessage = errorMessage;
+	m_backendResults = backendResults;
+	m_statusTimestampMs = QDateTime::currentMSecsSinceEpoch();
+}
+
+
+
+FeatureMessage ExamModeFeaturePlugin::statusMessage() const
+{
+	FeatureMessage message{ m_examModeFeature.uid(), FeatureCommand::ExamStatus };
+	message.addArgument( Argument::Status, m_status )
+		.addArgument( Argument::ErrorCode, m_errorCode )
+		.addArgument( Argument::ErrorMessage, m_errorMessage )
+		.addArgument( Argument::EffectiveDigest, m_profileDigest )
+		.addArgument( Argument::Capabilities, m_capabilities )
+		.addArgument( Argument::BackendResults, m_backendResults )
+		.addArgument( Argument::SessionId, m_statusSessionId )
+		.addArgument( Argument::Sequence, m_statusSequence )
+		.addArgument( Argument::Timestamp, m_statusTimestampMs );
+	return FeatureMessage{ message };
+}
+
+
+
 bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPolicy& processPolicy,
 											  const QStringList& sites, const QList<ExamModeProfile::UrlRule>& urlRules,
 											  const QString& sitesMode, const QString& defaultUrlAction, int leaseSeconds,
-											  const QString& profileId, qint64 profileRevision, const QString& expectedDigest )
+											  const QString& profileId, qint64 profileRevision, const QString& expectedDigest,
+											  const ExamModeProfile::NetworkPolicy& networkPolicy,
+											  const ExamModeSession::Envelope& envelope )
 {
-	const bool wasActive = m_active;
 	ExamModeProfile::ProcessPolicy normalizedProcessPolicy{
 		ExamModeProfile::normalizeApplications( processPolicy.terminateApplications ),
 		ExamModeProfile::normalizeApplications( processPolicy.preventLaunchApplications ),
@@ -394,24 +708,93 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	const auto normalizedProfileId = profileId.trimmed().isEmpty() ? QStringLiteral("legacy") : profileId.trimmed();
 	const auto digest = ExamModeProfile::profileDigest( normalizedProfileId, profileRevision,
 		normalizedProcessPolicy, effectiveUrlRules, effectiveDefaultAction, normalizedLeaseSeconds,
-		{ m_networkBackend, m_allowedNetworks, m_dnsServers, m_supervisionNetworks } );
+		networkPolicy );
+	m_statusSessionId = envelope.sessionId;
+	m_statusSequence = envelope.sequence;
+	m_capabilities = localCapabilities( networkPolicy );
+	setStatus( QStringLiteral("PENDING") );
 	if( validMode == false )
 	{
-		vWarning() << "ExamMode: mode de filtrage invalide" << sitesMode << "— utilisation de block";
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_SITE_MODE"),
+			QStringLiteral("Unknown site filtering mode") );
+		return false;
 	}
 	if( rejectedSites.isEmpty() == false )
 	{
-		vWarning() << "ExamMode:" << rejectedSites.size() << "site(s) invalide(s) ignoré(s)" << rejectedSites;
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_DOMAIN"),
+			QStringLiteral("One or more domains are invalid") );
+		return false;
 	}
 	if( normalizedProfileId.size() > 128 || normalizedProfileId.contains( QLatin1Char('\r') ) ||
 		normalizedProfileId.contains( QLatin1Char('\n') ) || profileRevision < 0 )
 	{
-		vWarning() << "ExamMode: identite ou revision de profil invalide";
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_PROFILE_ID"),
+			QStringLiteral("Invalid profile identity or revision") );
+		return false;
+	}
+	const auto now = QDateTime::currentMSecsSinceEpoch();
+	const auto envelopeValidation = ExamModeSession::validate( envelope, now, true );
+	if( envelopeValidation.accepted == false )
+	{
+		setStatus( QStringLiteral("REJECTED"), envelopeValidation.code, envelopeValidation.message );
+		return false;
+	}
+	const bool legacyEnvelope = envelopeValidation.code == QStringLiteral("LEGACY");
+	if( legacyEnvelope == false )
+	{
+		if( m_active && m_sessionId.isEmpty() == false && envelope.sessionId != m_sessionId &&
+			m_sessionExpiresAtMs > now )
+		{
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("SESSION_CONFLICT"),
+				QStringLiteral("Another non-expired exam session is active") );
+			return false;
+		}
+		if( ExamModeSession::isNewer( envelope, m_sessionId, m_lastSequence ) == false )
+		{
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("REPLAYED_SEQUENCE"),
+				QStringLiteral("Sequence was already processed") );
+			return false;
+		}
+	}
+	if( verifyEnvelopeSignature( envelope, QStringLiteral("start"), digest ) == false )
+	{
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_SIGNATURE"),
+			QStringLiteral("Profile signature verification failed") );
+		return false;
+	}
+	QString missingCapability;
+	if( requiredCapabilitiesAvailable( envelope, m_capabilities, &missingCapability ) == false )
+	{
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("MISSING_CAPABILITY"),
+			QStringLiteral("Required capability is unavailable: %1").arg( missingCapability ) );
+		return false;
+	}
+	if( networkPolicy.backend == ExamModeProfile::NetworkBackend::Firewall &&
+		m_capabilities.value( QStringLiteral("network.firewall") ).toString() != QStringLiteral("SUPPORTED") )
+	{
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("UNSUPPORTED_NETWORK_BACKEND"),
+			QStringLiteral("Firewall enforcement is unavailable on this endpoint") );
+		return false;
+	}
+	if( envelope.highSecurity && networkPolicy.backend != ExamModeProfile::NetworkBackend::Firewall &&
+		( effectiveUrlRules.isEmpty() == false || effectiveDefaultAction == ExamModeProfile::RuleAction::Block ) )
+	{
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("HIGH_ASSURANCE_NETWORK_REQUIRED"),
+			QStringLiteral("High-security URL policies require the firewall backend") );
+		return false;
+	}
+	if( envelope.highSecurity && normalizedProcessPolicy.preventLaunchApplications.isEmpty() == false &&
+		envelope.externalCapabilities.value( QStringLiteral("applicationControl") ).toString().compare(
+			QStringLiteral("ACTIVE"), Qt::CaseInsensitive ) != 0 )
+	{
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("STRONG_APPLICATION_CONTROL_REQUIRED"),
+			QStringLiteral("High-security process policies require broker-attested WDAC/AppLocker/IMA control") );
 		return false;
 	}
 	if( normalizedProfileId == m_profileId && profileRevision < m_profileRevision )
 	{
-		vWarning() << "ExamMode: revision de profil obsolete refusee" << profileRevision << "<" << m_profileRevision;
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("STALE_PROFILE_REVISION"),
+			QStringLiteral("Profile revision is older than the applied revision") );
 		return false;
 	}
 	const bool managedRevision = normalizedProfileId != QStringLiteral("legacy") ||
@@ -419,15 +802,50 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	if( managedRevision && normalizedProfileId == m_profileId && profileRevision == m_profileRevision &&
 		m_profileDigest.isEmpty() == false && digest != m_profileDigest )
 	{
-		vWarning() << "ExamMode: contenu different pour une revision deja appliquee";
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("REVISION_COLLISION"),
+			QStringLiteral("Profile content changed without a revision change") );
 		return false;
 	}
 	if( expectedDigest.trimmed().isEmpty() == false &&
 		digest.compare( expectedDigest.trimmed(), Qt::CaseInsensitive ) != 0 )
 	{
-		vWarning() << "ExamMode: empreinte du profil incorrecte; profil refuse";
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("DIGEST_MISMATCH"),
+			QStringLiteral("Expected and effective profile digests differ") );
 		return false;
 	}
+
+	struct Snapshot
+	{
+		bool active;
+		QStringList blockedApps;
+		QStringList launchApps;
+		QStringList sites;
+		QList<ExamModeProfile::UrlRule> urlRules;
+		QString sitesMode;
+		ExamModeProfile::RuleAction defaultAction;
+		bool structuredRules;
+		ExamModeProfile::NetworkPolicy network;
+		QString profileId;
+		qint64 revision;
+		QString digest;
+		int lease;
+		QString hostsSignature;
+		QString appsSignature;
+		bool siteFilteringActive;
+		QString sessionId;
+		quint64 sequence;
+		qint64 expiresAt;
+		bool highSecurity;
+	};
+	const Snapshot previous{
+		m_active, m_blockedApps, m_launchPreventedApps, m_sites, m_urlRules, m_sitesMode,
+		m_defaultUrlAction, m_hasStructuredUrlRules,
+		{ m_networkBackend, m_allowedNetworks, m_dnsServers, m_supervisionNetworks },
+		m_profileId, m_profileRevision, m_profileDigest, m_leaseSeconds, m_hostsSignature,
+		m_appsSignature, m_siteFilteringActive, m_sessionId, m_lastSequence,
+		m_sessionExpiresAtMs, m_highSecurity,
+	};
+
 	m_blockedApps = normalizedProcessPolicy.terminateApplications;
 	m_launchPreventedApps = normalizedProcessPolicy.preventLaunchApplications;
 	m_sites = normalizedSites;
@@ -435,11 +853,18 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	m_sitesMode = normalizedSitesMode;
 	m_defaultUrlAction = effectiveDefaultAction;
 	m_hasStructuredUrlRules = urlRules.isEmpty() == false;
+	m_networkBackend = networkPolicy.backend;
+	m_allowedNetworks = networkPolicy.allowedNetworks;
+	m_dnsServers = networkPolicy.dnsServers;
+	m_supervisionNetworks = networkPolicy.supervisionNetworks;
 	m_leaseSeconds = normalizedLeaseSeconds;
 	m_profileId = normalizedProfileId;
 	m_profileRevision = profileRevision;
 	m_profileDigest = digest;
-	m_active = true;
+	m_sessionId = legacyEnvelope ? m_sessionId : envelope.sessionId;
+	m_lastSequence = legacyEnvelope ? m_lastSequence : envelope.sequence;
+	m_sessionExpiresAtMs = legacyEnvelope ? now + normalizedLeaseSeconds * 1000LL : envelope.expiresAtMs;
+	m_highSecurity = envelope.highSecurity;
 	vInfo() << "ExamMode: profil" << m_profileId << "revision" << m_profileRevision
 		<< "empreinte" << m_profileDigest.left( 12 );
 
@@ -462,30 +887,33 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	signatureParts.append( QStringLiteral("dns:") + m_dnsServers.join( QLatin1Char(',') ) );
 	signatureParts.append( QStringLiteral("sup:") + m_supervisionNetworks.join( QLatin1Char(',') ) );
 	const auto signature = signatureParts.join( QLatin1Char('\n') );
-	if( signature != m_hostsSignature )
+	bool networkTouched = false;
+	bool launchTouched = false;
+	const bool networkRequired = m_networkBackend == ExamModeProfile::NetworkBackend::Firewall ||
+		m_urlRules.isEmpty() == false || m_defaultUrlAction == ExamModeProfile::RuleAction::Block;
+	if( signature != previous.hostsSignature || previous.active == false )
 	{
+		networkTouched = true;
 		vInfo() << "ExamMode: enforcement -" << m_blockedApps.size() << "app(s),"
 				<< m_sites.size() << "site(s), mode" << m_sitesMode;
 		m_siteFilteringActive = applySiteFiltering( m_sites, m_sitesMode );
 		m_hostsSignature = m_siteFilteringActive ? signature : QString{};
-		if( m_siteFilteringActive == false && ( m_sites.isEmpty() == false || m_sitesMode == QStringLiteral("allow") ) )
+		if( m_siteFilteringActive == false && networkRequired )
 		{
-			vWarning() << "ExamMode: filtrage réseau non appliqué; nouvelle tentative au prochain renouvellement";
+			vWarning() << "ExamMode: filtrage réseau obligatoire non appliqué";
 		}
-	}
-	else if( wasActive == false )
-	{
-		vInfo() << "ExamMode: enforcement (re)started -" << m_blockedApps.size() << "app(s)";
 	}
 
 	// Empêche le lancement des logiciels interdits (IFEO Windows) si la liste change.
 	const auto appsSig = m_blockedApps.join( QLatin1Char('\n') ) + QStringLiteral("\n--prevent--\n") +
 		m_launchPreventedApps.join( QLatin1Char('\n') );
-	if( appsSig != m_appsSignature )
+	bool launchApplied = true;
+	if( appsSig != previous.appsSignature || previous.active == false )
 	{
-		if( applyLaunchPrevention( m_launchPreventedApps ) == false )
+		launchTouched = true;
+		launchApplied = applyLaunchPrevention( m_launchPreventedApps );
+		if( launchApplied == false )
 		{
-			vWarning() << "ExamMode: le blocage au lancement n'a pas pu être appliqué complètement";
 			m_appsSignature.clear();
 		}
 		else
@@ -493,6 +921,73 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			m_appsSignature = appsSig;
 		}
 	}
+
+	bool deadManArmed = true;
+	if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall && m_siteFilteringActive )
+	{
+#if defined(Q_OS_LINUX)
+		deadManArmed = armFirewallDeadMan( m_leaseSeconds + 60 );
+#endif
+	}
+
+	if( ( networkRequired && m_siteFilteringActive == false ) || launchApplied == false || deadManArmed == false )
+	{
+		const auto failureCode = deadManArmed == false ? QStringLiteral("DEADMAN_UNAVAILABLE") :
+			launchApplied == false ? QStringLiteral("LAUNCH_PREVENTION_FAILED") :
+			QStringLiteral("NETWORK_ENFORCEMENT_FAILED");
+		if( launchTouched ) { removeLaunchPrevention(); }
+		if( networkTouched ) { removeSiteFiltering(); }
+
+		m_blockedApps = previous.blockedApps;
+		m_launchPreventedApps = previous.launchApps;
+		m_sites = previous.sites;
+		m_urlRules = previous.urlRules;
+		m_sitesMode = previous.sitesMode;
+		m_defaultUrlAction = previous.defaultAction;
+		m_hasStructuredUrlRules = previous.structuredRules;
+		m_networkBackend = previous.network.backend;
+		m_allowedNetworks = previous.network.allowedNetworks;
+		m_dnsServers = previous.network.dnsServers;
+		m_supervisionNetworks = previous.network.supervisionNetworks;
+		m_profileId = previous.profileId;
+		m_profileRevision = previous.revision;
+		m_profileDigest = previous.digest;
+		m_leaseSeconds = previous.lease;
+		m_sessionId = previous.sessionId;
+		m_lastSequence = previous.sequence;
+		m_sessionExpiresAtMs = previous.expiresAt;
+		m_highSecurity = previous.highSecurity;
+		m_active = previous.active;
+		m_hostsSignature = previous.hostsSignature;
+		m_appsSignature = previous.appsSignature;
+		m_siteFilteringActive = previous.siteFilteringActive;
+
+		bool restored = true;
+		if( previous.active && networkTouched )
+		{
+			m_siteFilteringActive = applySiteFiltering( m_sites, m_sitesMode );
+			restored = m_siteFilteringActive || ( m_urlRules.isEmpty() &&
+				m_defaultUrlAction == ExamModeProfile::RuleAction::Allow );
+		}
+		if( previous.active && launchTouched )
+		{
+			restored = applyLaunchPrevention( m_launchPreventedApps ) && restored;
+		}
+		if( restored == false )
+		{
+			m_active = false;
+			setStatus( QStringLiteral("DEGRADED"), QStringLiteral("ROLLBACK_FAILED"),
+				QStringLiteral("The candidate failed and the previous enforcement could not be fully restored") );
+		}
+		else
+		{
+			setStatus( QStringLiteral("REJECTED"), failureCode,
+				QStringLiteral("A mandatory enforcement backend failed; the previous state was restored") );
+		}
+		return false;
+	}
+
+	m_active = true;
 
 	if( m_timer == nullptr )
 	{
@@ -512,26 +1007,44 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		m_watchdog->setSingleShot( true );
 		connect( m_watchdog, &QTimer::timeout, this, [this]() {
 			vWarning() << "ExamMode: watchdog — plus de re-push du portail, levée automatique des restrictions";
+			setStatus( QStringLiteral("EXPIRED"), QStringLiteral("LEASE_EXPIRED"),
+				QStringLiteral("The exam lease was not renewed") );
 			stopEnforcement();
 		} );
 	}
 	m_watchdog->start( m_leaseSeconds * 1000 );
 
-	// Dead-man du firewall : il doit être repoussé à CHAQUE renouvellement, pas
-	// seulement quand la politique change — sinon, en marche normale (même profil
-	// re-poussé chaque minute), il se déclencherait ~un bail après la dernière
-	// modification de politique, en plein examen. Le dead-man n'est qu'un secours
-	// pour la mort du processus ; tant que Veyon vit, c'est le watchdog qui lève.
-	if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall && m_siteFilteringActive )
+	if( m_driftTimer == nullptr )
 	{
-#if defined(Q_OS_LINUX)
-		armFirewallDeadMan( m_leaseSeconds + 60 );
-#elif defined(Q_OS_WIN)
-		armWindowsFirewallDeadMan( m_leaseSeconds + 60 );
-#endif
+		m_driftTimer = new QTimer( this );
+		connect( m_driftTimer, &QTimer::timeout, this, [this]() {
+			if( m_active && verifyEnforcement() == false )
+			{
+				setStatus( QStringLiteral("DEGRADED"), QStringLiteral("ENFORCEMENT_DRIFT"),
+					QStringLiteral("A mandatory backend drifted from the applied policy") );
+			}
+		} );
 	}
+	m_driftTimer->start( 10000 );
 
 	enforceTick();		// passe immédiate sur les processus interdits
+	QVariantMap results{
+		{ QStringLiteral("network"), networkRequired ? QStringLiteral("APPLIED") : QStringLiteral("NOT_REQUESTED") },
+		{ QStringLiteral("launchPrevention"), m_launchPreventedApps.isEmpty() ?
+			QStringLiteral("NOT_REQUESTED") : QStringLiteral("APPLIED") },
+		{ QStringLiteral("deadMan"), m_networkBackend == ExamModeProfile::NetworkBackend::Firewall ?
+			QStringLiteral("ARMED") : QStringLiteral("NOT_REQUIRED") },
+	};
+	for( auto it = envelope.externalCapabilities.constBegin(); it != envelope.externalCapabilities.constEnd(); ++it )
+	{
+		m_capabilities.insert( it.key(), it.value() );
+	}
+	if( m_status != QStringLiteral("DEGRADED") )
+	{
+		setStatus( QStringLiteral("APPLIED"), {}, {}, results );
+	}
+	persistReplayState();
+	persistActiveState();
 	return true;
 }
 
@@ -550,6 +1063,10 @@ void ExamModeFeaturePlugin::stopEnforcement()
 	{
 		m_watchdog->stop();
 	}
+	if( m_driftTimer )
+	{
+		m_driftTimer->stop();
+	}
 	removeLaunchPrevention();
 	removeSiteFiltering();
 	m_blockedApps.clear();
@@ -563,7 +1080,342 @@ void ExamModeFeaturePlugin::stopEnforcement()
 	m_dnsServers.clear();
 	m_supervisionNetworks.clear();
 	m_siteFilteringActive = false;
+	QFile::remove( activeStateFile() );
 	vInfo() << "ExamMode: enforcement stopped";
+}
+
+
+
+bool ExamModeFeaturePlugin::stopEnforcement( const ExamModeSession::Envelope& envelope )
+{
+	m_statusSessionId = envelope.sessionId;
+	m_statusSequence = envelope.sequence;
+	const auto validation = ExamModeSession::validate( envelope, QDateTime::currentMSecsSinceEpoch(),
+		m_highSecurity == false );
+	if( validation.accepted == false )
+	{
+		setStatus( QStringLiteral("REJECTED"), validation.code, validation.message );
+		return false;
+	}
+	const bool legacy = validation.code == QStringLiteral("LEGACY");
+	if( legacy == false )
+	{
+		if( m_sessionId.isEmpty() || envelope.sessionId != m_sessionId )
+		{
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("SESSION_MISMATCH"),
+				QStringLiteral("Stop command does not target the active session") );
+			return false;
+		}
+		if( envelope.sequence <= m_lastSequence )
+		{
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("REPLAYED_SEQUENCE"),
+				QStringLiteral("Sequence was already processed") );
+			return false;
+		}
+		if( verifyEnvelopeSignature( envelope, QStringLiteral("stop"), m_profileDigest ) == false )
+		{
+			setStatus( QStringLiteral("REJECTED"), QStringLiteral("INVALID_SIGNATURE"),
+				QStringLiteral("Stop signature verification failed") );
+			return false;
+		}
+		m_lastSequence = envelope.sequence;
+		m_sessionExpiresAtMs = envelope.expiresAtMs;
+	}
+	stopEnforcement();
+	setStatus( QStringLiteral("STOPPED") );
+	persistReplayState();
+	return true;
+}
+
+
+
+bool ExamModeFeaturePlugin::verifyEnforcement()
+{
+#if defined(Q_OS_WIN)
+	const auto registryStateHealthy = []( const QString& path ) {
+		const auto entries = readJsonFile( path ).value( QStringLiteral("entries") ).toArray();
+		if( entries.isEmpty() ) { return false; }
+		for( const auto& value : entries )
+		{
+			const auto entry = value.toObject();
+			const auto expected = entry.value( QStringLiteral("expected") ).toObject();
+			const auto current = ExamModeWindowsNative::readRegistryValue(
+				entry.value( QStringLiteral("key") ).toString(), entry.value( QStringLiteral("name") ).toString() );
+			if( current.value( QStringLiteral("ok") ).toBool() == false ||
+				current.value( QStringLiteral("exists") ).toBool() != expected.value( QStringLiteral("exists") ).toBool() ||
+				current.value( QStringLiteral("type") ).toString().compare(
+					expected.value( QStringLiteral("type") ).toString(), Qt::CaseInsensitive ) != 0 ||
+				current.value( QStringLiteral("data") ).toString() != expected.value( QStringLiteral("data") ).toString() )
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+#endif
+
+	bool networkHealthy = true;
+	if( m_siteFilteringActive && ( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall ||
+		m_urlRules.isEmpty() == false || m_defaultUrlAction == ExamModeProfile::RuleAction::Block ) )
+	{
+#if defined(Q_OS_WIN)
+		networkHealthy = registryStateHealthy( siteFilterStateFile() ) && QFile::exists( pacFilePath() );
+#elif defined(Q_OS_LINUX)
+		if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall )
+		{
+			QProcess nft;
+			nft.start( QStringLiteral("nft"), { QStringLiteral("list"), QStringLiteral("table"),
+				QStringLiteral("inet"), QStringLiteral("veyon_exammode") } );
+			networkHealthy = nft.waitForStarted( 2000 ) && nft.waitForFinished( 3000 ) &&
+				nft.exitStatus() == QProcess::NormalExit && nft.exitCode() == 0;
+			QProcess timer;
+			timer.start( QStringLiteral("systemctl"), { QStringLiteral("is-active"),
+				QStringLiteral("veyon-exammode-failsafe.timer") } );
+			networkHealthy = timer.waitForStarted( 2000 ) && timer.waitForFinished( 3000 ) &&
+				timer.exitStatus() == QProcess::NormalExit && timer.exitCode() == 0 && networkHealthy;
+		}
+		else
+#endif
+		{
+			QFile hosts( hostsFilePath() );
+			networkHealthy = hosts.open( QIODevice::ReadOnly | QIODevice::Text ) &&
+				hosts.readAll().contains( HostsMarkerBegin );
+		}
+	}
+
+	bool launchHealthy = true;
+#if defined(Q_OS_WIN)
+	launchHealthy = m_launchPreventedApps.isEmpty() || registryStateHealthy( launchPreventionStateFile() );
+#elif defined(Q_OS_LINUX)
+	launchHealthy = m_launchPreventedApps.isEmpty() ||
+		( m_execGuard && m_execGuard->isActive() && m_execGuard->isHealthy() && m_execGuard->refreshMounts() );
+#endif
+	if( networkHealthy && launchHealthy )
+	{
+		return true;
+	}
+
+	bool repaired = true;
+	if( networkHealthy == false )
+	{
+#if defined(Q_OS_WIN)
+		// Une dérive registre peut être une nouvelle GPO. Ne jamais l'écraser : la
+		// restauration ownership-aware doit rester conservatrice.
+		repaired = false;
+#else
+		m_hostsSignature.clear();
+		m_siteFilteringActive = applySiteFiltering( m_sites, m_sitesMode );
+		repaired = m_siteFilteringActive;
+#endif
+	}
+	if( launchHealthy == false )
+	{
+#if defined(Q_OS_WIN)
+		repaired = false;
+#else
+		m_appsSignature.clear();
+		repaired = applyLaunchPrevention( m_launchPreventedApps ) && repaired;
+#endif
+	}
+	if( repaired )
+	{
+		setStatus( QStringLiteral("APPLIED"), {}, {},
+			{ { QStringLiteral("drift"), QStringLiteral("REPAIRED") } } );
+	}
+	return repaired;
+}
+
+
+
+QString ExamModeFeaturePlugin::replayStateFile()
+{
+#if defined(Q_OS_WIN)
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-replay-state.json");
+#else
+	return QStringLiteral("/var/lib/veyon/exammode-replay-state.json");
+#endif
+}
+
+
+
+void ExamModeFeaturePlugin::loadReplayState()
+{
+	const auto state = readJsonFile( replayStateFile() );
+	const auto expiresAt = state.value( QStringLiteral("expiresAtMs") ).toVariant().toLongLong();
+	if( state.value( QStringLiteral("version") ).toInt() != 1 ||
+		expiresAt <= QDateTime::currentMSecsSinceEpoch() - ExamModeSession::MaximumClockSkewMs )
+	{
+		QFile::remove( replayStateFile() );
+		return;
+	}
+	m_sessionId = state.value( QStringLiteral("sessionId") ).toString();
+	m_lastSequence = state.value( QStringLiteral("lastSequence") ).toString().toULongLong();
+	m_sessionExpiresAtMs = expiresAt;
+	m_highSecurity = state.value( QStringLiteral("highSecurity") ).toBool();
+}
+
+
+
+void ExamModeFeaturePlugin::persistReplayState() const
+{
+	if( m_sessionId.isEmpty() )
+	{
+		return;
+	}
+	if( writeJsonFile( replayStateFile(), {
+		{ QStringLiteral("version"), 1 },
+		{ QStringLiteral("sessionId"), m_sessionId },
+		{ QStringLiteral("lastSequence"), QString::number( m_lastSequence ) },
+		{ QStringLiteral("expiresAtMs"), QString::number( m_sessionExpiresAtMs ) },
+		{ QStringLiteral("highSecurity"), m_highSecurity },
+	} ) == false )
+	{
+		vWarning() << "ExamMode: impossible de persister l'état anti-rejeu";
+	}
+}
+
+
+
+QString ExamModeFeaturePlugin::activeStateFile()
+{
+#if defined(Q_OS_WIN)
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-active-state.json");
+#else
+	return QStringLiteral("/var/lib/veyon/exammode-active-state.json");
+#endif
+}
+
+
+
+void ExamModeFeaturePlugin::persistActiveState() const
+{
+	if( m_active == false )
+	{
+		return;
+	}
+	QJsonArray urlRules;
+	const auto originalRuleCount = m_hasStructuredUrlRules ? qMax( 0, m_urlRules.size() - m_sites.size() ) : 0;
+	for( int index = 0; index < originalRuleCount; ++index )
+	{
+		const auto& rule = m_urlRules.at( index );
+		urlRules.append( QJsonObject{
+			{ QStringLiteral("action"), rule.action == ExamModeProfile::RuleAction::Allow ?
+				QStringLiteral("allow") : QStringLiteral("block") },
+			{ QStringLiteral("expression"), rule.expression },
+			{ QStringLiteral("regularExpression"), rule.regularExpression },
+		} );
+	}
+	const QJsonObject state{
+		{ QStringLiteral("version"), 1 },
+		{ QStringLiteral("terminateApplications"), QJsonArray::fromStringList( m_blockedApps ) },
+		{ QStringLiteral("preventLaunchApplications"), QJsonArray::fromStringList( m_launchPreventedApps ) },
+		{ QStringLiteral("sites"), QJsonArray::fromStringList( m_sites ) },
+		{ QStringLiteral("sitesMode"), m_sitesMode },
+		{ QStringLiteral("urlRules"), urlRules },
+		{ QStringLiteral("urlDefaultAction"), m_defaultUrlAction == ExamModeProfile::RuleAction::Allow ?
+			QStringLiteral("allow") : QStringLiteral("block") },
+		{ QStringLiteral("networkBackend"), m_networkBackend == ExamModeProfile::NetworkBackend::Firewall ?
+			QStringLiteral("firewall") : QStringLiteral("hosts") },
+		{ QStringLiteral("allowedNetworks"), QJsonArray::fromStringList( m_allowedNetworks ) },
+		{ QStringLiteral("dnsServers"), QJsonArray::fromStringList( m_dnsServers ) },
+		{ QStringLiteral("supervisionNetworks"), QJsonArray::fromStringList( m_supervisionNetworks ) },
+		{ QStringLiteral("profileId"), m_profileId },
+		{ QStringLiteral("profileRevision"), QString::number( m_profileRevision ) },
+		{ QStringLiteral("profileDigest"), m_profileDigest },
+		{ QStringLiteral("leaseSeconds"), m_leaseSeconds },
+		{ QStringLiteral("sessionId"), m_sessionId },
+		{ QStringLiteral("lastSequence"), QString::number( m_lastSequence ) },
+		{ QStringLiteral("expiresAtMs"), QString::number( m_sessionExpiresAtMs ) },
+		{ QStringLiteral("highSecurity"), m_highSecurity },
+	};
+	if( writeJsonFile( activeStateFile(), state ) == false )
+	{
+		vWarning() << "ExamMode: impossible de persister l'état d'enforcement actif";
+	}
+}
+
+
+
+void ExamModeFeaturePlugin::recoverActiveState()
+{
+	const auto state = readJsonFile( activeStateFile() );
+	const auto expiresAt = state.value( QStringLiteral("expiresAtMs") ).toString().toLongLong();
+	if( state.value( QStringLiteral("version") ).toInt() != 1 ||
+		expiresAt <= QDateTime::currentMSecsSinceEpoch() )
+	{
+		stopEnforcement();
+		setStatus( QStringLiteral("EXPIRED"), QStringLiteral("RECOVERY_STATE_EXPIRED"),
+			QStringLiteral("Persisted exam state is no longer valid") );
+		return;
+	}
+
+	ExamModeProfile::ProcessPolicy processPolicy;
+	for( const auto& value : state.value( QStringLiteral("terminateApplications") ).toArray() )
+	{
+		processPolicy.terminateApplications.append( value.toString() );
+	}
+	for( const auto& value : state.value( QStringLiteral("preventLaunchApplications") ).toArray() )
+	{
+		processPolicy.preventLaunchApplications.append( value.toString() );
+	}
+	QList<ExamModeProfile::UrlRule> urlRules;
+	for( const auto& value : state.value( QStringLiteral("urlRules") ).toArray() )
+	{
+		const auto rule = value.toObject();
+		urlRules.append( {
+			rule.value( QStringLiteral("action") ).toString() == QStringLiteral("allow") ?
+				ExamModeProfile::RuleAction::Allow : ExamModeProfile::RuleAction::Block,
+			rule.value( QStringLiteral("expression") ).toString(),
+			rule.value( QStringLiteral("regularExpression") ).toBool(),
+		} );
+	}
+	auto stringList = [&state]( const QString& key ) {
+		QStringList values;
+		for( const auto& value : state.value( key ).toArray() ) { values.append( value.toString() ); }
+		return values;
+	};
+	bool validBackend = false;
+	ExamModeProfile::NetworkPolicy networkPolicy{
+		ExamModeProfile::networkBackendFromString( state.value( QStringLiteral("networkBackend") ).toString(), &validBackend ),
+		stringList( QStringLiteral("allowedNetworks") ), stringList( QStringLiteral("dnsServers") ),
+		stringList( QStringLiteral("supervisionNetworks") ),
+	};
+	if( validBackend == false )
+	{
+		stopEnforcement();
+		setStatus( QStringLiteral("REJECTED"), QStringLiteral("CORRUPT_RECOVERY_STATE"),
+			QStringLiteral("Persisted network backend is invalid") );
+		return;
+	}
+
+	m_sessionId = state.value( QStringLiteral("sessionId") ).toString();
+	m_lastSequence = state.value( QStringLiteral("lastSequence") ).toString().toULongLong();
+	m_sessionExpiresAtMs = expiresAt;
+	const bool highSecurity = state.value( QStringLiteral("highSecurity") ).toBool();
+	const bool recovered = startEnforcement( processPolicy, stringList( QStringLiteral("sites") ), urlRules,
+		state.value( QStringLiteral("sitesMode") ).toString(),
+		state.value( QStringLiteral("urlDefaultAction") ).toString(),
+		state.value( QStringLiteral("leaseSeconds") ).toInt(),
+		state.value( QStringLiteral("profileId") ).toString(),
+		state.value( QStringLiteral("profileRevision") ).toString().toLongLong(),
+		state.value( QStringLiteral("profileDigest") ).toString(), networkPolicy, {} );
+	if( recovered == false )
+	{
+		stopEnforcement();
+		QFile::remove( activeStateFile() );
+		return;
+	}
+	m_highSecurity = highSecurity;
+	m_sessionExpiresAtMs = expiresAt;
+	if( m_watchdog )
+	{
+		const auto remaining = qMax<qint64>( 1, expiresAt - QDateTime::currentMSecsSinceEpoch() );
+		m_watchdog->start( static_cast<int>( qMin<qint64>( remaining, std::numeric_limits<int>::max() ) ) );
+	}
+	setStatus( QStringLiteral("APPLIED"), {}, {},
+		{ { QStringLiteral("recovery"), QStringLiteral("RESTORED") } } );
+	persistReplayState();
+	persistActiveState();
 }
 
 
@@ -574,11 +1426,32 @@ void ExamModeFeaturePlugin::enforceTick()
 	{
 		return;
 	}
+#if defined(Q_OS_WIN)
+	QStringList images;
+	for( const auto& app : m_blockedApps )
+	{
+		const auto image = windowsImageName( app );
+		if( image.isEmpty() == false ) { images.append( image ); }
+	}
+	const auto result = ExamModeWindowsNative::terminateProcesses( images );
+	if( result.detected.isEmpty() == false )
+	{
+		vWarning() << "ExamMode: processus interdits détectés:" << result.detected;
+	}
+	if( result.failed.isEmpty() == false )
+	{
+		vWarning() << "ExamMode: échec de terminaison native:" << result.failed;
+		setStatus( QStringLiteral("DEGRADED"), QStringLiteral("PROCESS_TERMINATION_FAILED"),
+			QStringLiteral("One or more blocked processes could not be terminated"),
+			{ { QStringLiteral("failedProcesses"), result.failed } } );
+	}
+#else
 	auditRunningBlockedProcesses();		// journalise les tentatives (processus interdit trouvé actif)
 	for( const auto& app : m_blockedApps )
 	{
 		killApplication( app );
 	}
+#endif
 }
 
 
@@ -597,39 +1470,9 @@ void ExamModeFeaturePlugin::auditRunningBlockedProcesses() const
 
 	QProcess process;
 #if defined(Q_OS_WIN)
-	QSet<QString> expected;
-	for( const auto& app : m_blockedApps )
-	{
-		const auto image = windowsImageName( app );
-		if( image.isEmpty() == false )
-		{
-			expected.insert( image.toLower() );
-		}
-	}
-	if( expected.isEmpty() )
-	{
-		return;
-	}
-	process.start( QStringLiteral("tasklist"), { QStringLiteral("/fo"), QStringLiteral("csv"), QStringLiteral("/nh") } );
-	if( process.waitForStarted( 1000 ) == false || process.waitForFinished( 1000 ) == false )
-	{
-		return;
-	}
-	QSet<QString> found;
-	const auto lines = QString::fromLocal8Bit( process.readAllStandardOutput() ).split( QLatin1Char('\n'), Qt::SkipEmptyParts );
-	for( const auto& line : lines )
-	{
-		auto image = line.section( QLatin1Char(','), 0, 0 );		// "image.exe"
-		image.remove( QLatin1Char('"') );
-		if( expected.contains( image.trimmed().toLower() ) )
-		{
-			found.insert( image.trimmed() );
-		}
-	}
-	if( found.isEmpty() == false )
-	{
-		vWarning() << "ExamMode: tentative de contournement — processus interdit(s) actif(s):" << QStringList( found.values() );
-	}
+	// La passe Windows combine audit et terminaison dans enforceTick() afin de ne
+	// faire qu'un seul instantané Toolhelp par intervalle.
+	Q_UNUSED(process)
 #else
 	QStringList patterns;
 	for( const auto& app : m_blockedApps )
@@ -682,14 +1525,13 @@ void ExamModeFeaturePlugin::killApplication( const QString& executable ) const
 	}
 
 #if defined(Q_OS_WIN)
-	// /F force, /IM par nom d'image ; les profils Omnissa peuvent contenir un chemin complet.
 	const auto image = windowsImageName( name );
 	if( image.isEmpty() )
 	{
 		vWarning() << "ExamMode: nom d'application Windows invalide ignoré" << name;
 		return;
 	}
-	QProcess::startDetached( QStringLiteral("taskkill"), { QStringLiteral("/F"), QStringLiteral("/IM"), image } );
+	ExamModeWindowsNative::terminateProcesses( { image } );
 #else
 	// Nom d'exécutable (on tolère un chemin ou un suffixe .exe hérité d'un profil
 	// Windows) : on cible le NOM de processus exact (-x) pour ne pas tuer par
@@ -1012,7 +1854,12 @@ bool ExamModeFeaturePlugin::applyLinuxFirewall()
 	}
 
 	// dead-man : retire la table à l'échéance du bail (+marge) même si Veyon meurt.
-	armFirewallDeadMan( m_leaseSeconds + 60 );
+	if( armFirewallDeadMan( m_leaseSeconds + 60 ) == false )
+	{
+		vWarning() << "ExamMode: firewall retiré car son dead-man n'a pas pu être armé";
+		removeLinuxFirewall();
+		return false;
+	}
 
 	vInfo() << "ExamMode: firewall egress actif —" << m_allowedNetworks.size() << "réseau(x) autorisé(s),"
 			<< m_dnsServers.size() << "résolveur(s) DNS";
@@ -1048,7 +1895,7 @@ void ExamModeFeaturePlugin::removeLinuxFirewall()
  * la minuterie est repoussée ; s'il cesse (crash, arrêt, poste isolé), elle finit
  * par se déclencher et rétablit le réseau — garde-fou de dernier recours.
  */
-void ExamModeFeaturePlugin::armFirewallDeadMan( int seconds ) const
+bool ExamModeFeaturePlugin::armFirewallDeadMan( int seconds ) const
 {
 	disarmFirewallDeadMan();		// retire une minuterie précédente
 
@@ -1065,7 +1912,9 @@ void ExamModeFeaturePlugin::armFirewallDeadMan( int seconds ) const
 	{
 		vWarning() << "ExamMode: dead-man systemd non armé (systemd-run indisponible?):"
 				   << run.readAllStandardError();
+		return false;
 	}
+	return true;
 }
 
 
@@ -1152,10 +2001,17 @@ bool ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
 		}
 		const auto key = QStringLiteral(
 			"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%1" ).arg( image );
+		const auto previous = regRead( key, QStringLiteral("Debugger") );
+		if( previous[QStringLiteral("ok")].toBool() == false )
+		{
+			vWarning() << "ExamMode: sauvegarde IFEO impossible; transaction refusée" << key;
+			return false;
+		}
 		entries.append( QJsonObject{
 			{ QStringLiteral("image"), image },
 			{ QStringLiteral("key"), key },
-			{ QStringLiteral("previous"), regRead( key, QStringLiteral("Debugger") ) },
+			{ QStringLiteral("name"), QStringLiteral("Debugger") },
+			{ QStringLiteral("previous"), previous },
 			{ QStringLiteral("expected"), QJsonObject{
 				{ QStringLiteral("exists"), true }, { QStringLiteral("type"), QStringLiteral("REG_SZ") },
 				{ QStringLiteral("data"), QStringLiteral("C:\\Windows\\System32\\systray.exe") },
@@ -1189,7 +2045,8 @@ bool ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
 #elif defined(Q_OS_LINUX)
 	// Prévention de lancement au niveau noyau via fanotify (FAN_OPEN_EXEC_PERM).
 	// Le kill périodique (enforceTick) reste actif en complément et en repli si
-	// fanotify est indisponible (privilèges/kernel). Fail-safe : jamais d'échec dur.
+	// fanotify est indisponible (privilèges/kernel). Une règle preventLaunch est
+	// obligatoire : le kill périodique ne constitue pas un succès équivalent.
 	if( apps.isEmpty() )
 	{
 		if( m_execGuard )
@@ -1209,13 +2066,13 @@ bool ExamModeFeaturePlugin::applyLaunchPrevention( const QStringList& apps )
 	}
 	if( m_execGuard->startGuarding( apps ) == false )
 	{
-		vWarning() << "ExamMode: prévention de lancement noyau indisponible — "
-					  "repli sur la terminaison périodique (kill)";
+		vWarning() << "ExamMode: prévention de lancement noyau indisponible";
+		return false;
 	}
-	return true;
+	return m_execGuard->isHealthy();
 #else
 	Q_UNUSED(apps)
-	return true;
+	return apps.isEmpty();
 #endif
 }
 
@@ -1325,13 +2182,9 @@ bool ExamModeFeaturePlugin::writePacFile()
 
 bool ExamModeFeaturePlugin::regSet( const QString& key, const QString& name, const QString& type, const QString& data )
 {
-	QProcess p;
-	p.start( QStringLiteral("reg"), { QStringLiteral("add"), key, QStringLiteral("/v"), name,
-		QStringLiteral("/t"), type, QStringLiteral("/d"), data, QStringLiteral("/f") } );
-	if( p.waitForStarted( 2000 ) == false || p.waitForFinished( 5000 ) == false ||
-		p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0 )
+	if( ExamModeWindowsNative::setRegistryValue( key, name, type, data ) == false )
 	{
-		vWarning() << "ExamMode: échec reg add" << key << name << p.readAllStandardError();
+		vWarning() << "ExamMode: échec RegSetValueEx" << key << name;
 		return false;
 	}
 	return true;
@@ -1341,16 +2194,9 @@ bool ExamModeFeaturePlugin::regSet( const QString& key, const QString& name, con
 
 bool ExamModeFeaturePlugin::regDelete( const QString& key, const QString& name )
 {
-	if( regRead( key, name )[QStringLiteral("exists")].toBool() == false )
+	if( ExamModeWindowsNative::deleteRegistryValue( key, name ) == false )
 	{
-		return true;
-	}
-	QProcess p;
-	p.start( QStringLiteral("reg"), { QStringLiteral("delete"), key, QStringLiteral("/v"), name, QStringLiteral("/f") } );
-	if( p.waitForStarted( 2000 ) == false || p.waitForFinished( 5000 ) == false ||
-		p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0 )
-	{
-		vWarning() << "ExamMode: échec reg delete" << key << name << p.readAllStandardError();
+		vWarning() << "ExamMode: échec RegDeleteValue" << key << name;
 		return false;
 	}
 	return true;
@@ -1360,27 +2206,7 @@ bool ExamModeFeaturePlugin::regDelete( const QString& key, const QString& name )
 
 QJsonObject ExamModeFeaturePlugin::regRead( const QString& key, const QString& name )
 {
-	QProcess process;
-	process.start( QStringLiteral("reg"), { QStringLiteral("query"), key, QStringLiteral("/v"), name } );
-	if( process.waitForStarted( 2000 ) == false || process.waitForFinished( 5000 ) == false ||
-		process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 )
-	{
-		return QJsonObject{ { QStringLiteral("exists"), false } };
-	}
-
-	const auto expression = QRegularExpression(
-		QStringLiteral("^\\s*%1\\s+(REG_[A-Z0-9_]+)\\s+(.*)$").arg( QRegularExpression::escape( name ) ),
-		QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption );
-	const auto match = expression.match( QString::fromLocal8Bit( process.readAllStandardOutput() ) );
-	if( match.hasMatch() == false )
-	{
-		return QJsonObject{ { QStringLiteral("exists"), false } };
-	}
-	return QJsonObject{
-		{ QStringLiteral("exists"), true },
-		{ QStringLiteral("type"), match.captured( 1 ) },
-		{ QStringLiteral("data"), match.captured( 2 ).trimmed() },
-	};
+	return ExamModeWindowsNative::readRegistryValue( key, name );
 }
 
 
@@ -1391,6 +2217,11 @@ bool ExamModeFeaturePlugin::regRestore( const QString& key, const QString& name,
 	if( expected.isEmpty() == false )
 	{
 		const auto current = regRead( key, name );
+		if( current[QStringLiteral("ok")].toBool() == false )
+		{
+			vWarning() << "ExamMode: lecture registre impossible, restauration différée" << key << name;
+			return false;
+		}
 		const auto currentType = current[QStringLiteral("type")].toString();
 		const auto expectedType = expected[QStringLiteral("type")].toString();
 		const auto currentData = current[QStringLiteral("data")].toString();
@@ -1407,10 +2238,9 @@ bool ExamModeFeaturePlugin::regRestore( const QString& key, const QString& name,
 	}
 	if( previous[QStringLiteral("exists")].toBool() )
 	{
-		return regSet( key, name, previous[QStringLiteral("type")].toString(),
-			previous[QStringLiteral("data")].toString() );
+		return ExamModeWindowsNative::restoreRegistryValue( key, name, previous );
 	}
-	return regDelete( key, name );
+	return previous[QStringLiteral("ok")].toBool() && regDelete( key, name );
 }
 
 
@@ -1475,9 +2305,15 @@ bool ExamModeFeaturePlugin::applyWindowsSiteFiltering( const QStringList& sites,
 		else if( policy.second == QStringLiteral("AutoConfigURL") ) { data = fileUrl; }
 		else if( policy.second == QStringLiteral("Locked") ) { type = QStringLiteral("REG_DWORD"); data = QStringLiteral("1"); }
 		else if( policy.second == QStringLiteral("Enabled") ) { type = QStringLiteral("REG_DWORD"); data = QStringLiteral("0"); }
+		const auto previous = regRead( policy.first, policy.second );
+		if( previous[QStringLiteral("ok")].toBool() == false )
+		{
+			vWarning() << "ExamMode: sauvegarde de politique navigateur impossible" << policy.first << policy.second;
+			return false;
+		}
 		entries.append( QJsonObject{
 			{ QStringLiteral("key"), policy.first }, { QStringLiteral("name"), policy.second },
-			{ QStringLiteral("previous"), regRead( policy.first, policy.second ) },
+			{ QStringLiteral("previous"), previous },
 			{ QStringLiteral("expected"), QJsonObject{
 				{ QStringLiteral("exists"), true }, { QStringLiteral("type"), type },
 				{ QStringLiteral("data"), data },
@@ -1640,105 +2476,14 @@ QString ExamModeFeaturePlugin::windowsFirewallStateFile()
 
 
 
-QString ExamModeFeaturePlugin::windowsFirewallRestoreScript()
-{
-	return QStringLiteral("C:/ProgramData/Veyon/exammode-firewall-restore.cmd");
-}
-
-
-
-/**
- * Applique une allow-list egress via le pare-feu Windows Defender (politique de
- * sortie par défaut « block »). Parité avec le backend nftables Linux : robuste à
- * l'IP directe, au DoH vers un résolveur arbitraire, au VPN vers un endpoint
- * arbitraire — l'enforcement est dans le pare-feu, pas dans le navigateur.
- * Fail-closed : en cas d'échec, aucune règle partielle n'est laissée et le poste
- * reste ouvert (bruyamment journalisé). Un dead-man planifié restaure la
- * connectivité à l'échéance du bail même si Veyon meurt. EXPÉRIMENTAL : à valider
- * en laboratoire sur l'image exacte avant production (voir README).
- */
 bool ExamModeFeaturePlugin::applyWindowsFirewall()
 {
-	removeWindowsFirewall();		// repart d'un état propre (idempotent)
-
-	// /32 (IPv4) et /128 (IPv6) : netsh attend l'IP nue, pas le préfixe.
-	const auto toRemoteIp = []( const QString& cidr ) -> QString {
-		const auto parts = cidr.split( QLatin1Char('/') );
-		if( parts.size() != 2 ) { return {}; }
-		return ( parts.at( 1 ) == QStringLiteral("32") || parts.at( 1 ) == QStringLiteral("128") ) ?
-			parts.first() : cidr;
-	};
-
-	QStringList allowIps;
-	for( const auto& cidr : m_allowedNetworks + m_supervisionNetworks )
-	{
-		const auto ip = toRemoteIp( cidr );
-		if( ip.isEmpty() == false ) { allowIps.append( ip ); }
-	}
-	QStringList dnsIps;
-	for( const auto& cidr : m_dnsServers )
-	{
-		const auto ip = toRemoteIp( cidr );
-		if( ip.isEmpty() == false ) { dnsIps.append( ip ); }
-	}
-
-	// marqueur d'état (nettoyage au prochain démarrage après crash) + politique à
-	// restaurer (défaut Windows OOTB : entrant bloqué, sortant autorisé).
-	if( writeJsonFile( windowsFirewallStateFile(), QJsonObject{
-			{ QStringLiteral("version"), 1 },
-			{ QStringLiteral("rule"), QStringLiteral("VeyonExamModeEgress") },
-			{ QStringLiteral("restorePolicy"), QStringLiteral("blockinbound,allowoutbound") } } ) == false )
-	{
-		vWarning() << "ExamMode: impossible d'écrire l'état du firewall Windows";
-		return false;
-	}
-
-	// 1) Règles ALLOW d'abord — inoffensives tant que la politique par défaut reste
-	//    « allow » : si l'ajout échoue, on n'a pas encore fermé la sortie (fail-open).
-	bool ok = true;
-	if( allowIps.isEmpty() == false )
-	{
-		ok = runProcessSucceeds( QStringLiteral("netsh"), {
-			QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("add"), QStringLiteral("rule"),
-			QStringLiteral("name=VeyonExamModeEgress"), QStringLiteral("dir=out"), QStringLiteral("action=allow"),
-			QStringLiteral("remoteip=") + allowIps.join( QLatin1Char(',') ), QStringLiteral("enable=yes") } ) && ok;
-	}
-	if( dnsIps.isEmpty() == false )
-	{
-		for( const auto& protocol : { QStringLiteral("UDP"), QStringLiteral("TCP") } )
-		{
-			ok = runProcessSucceeds( QStringLiteral("netsh"), {
-				QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("add"), QStringLiteral("rule"),
-				QStringLiteral("name=VeyonExamModeEgress"), QStringLiteral("dir=out"), QStringLiteral("action=allow"),
-				QStringLiteral("protocol=") + protocol, QStringLiteral("remoteport=53"),
-				QStringLiteral("remoteip=") + dnsIps.join( QLatin1Char(',') ), QStringLiteral("enable=yes") } ) && ok;
-		}
-	}
-	if( ok == false )
-	{
-		vWarning() << "ExamMode: échec de l'ajout des règles firewall Windows";
-		removeWindowsFirewall();
-		return false;
-	}
-
-	// 2) dead-man AVANT la bascule en block : si Veyon meurt juste après, la tâche
-	//    planifiée restaure quand même la connectivité à l'échéance du bail.
-	armWindowsFirewallDeadMan( m_leaseSeconds + 60 );
-
-	// 3) Bascule de la politique de sortie par défaut sur « block » (dernier geste).
-	QByteArray error;
-	if( runProcessSucceeds( QStringLiteral("netsh"), {
-			QStringLiteral("advfirewall"), QStringLiteral("set"), QStringLiteral("allprofiles"),
-			QStringLiteral("firewallpolicy"), QStringLiteral("blockinbound,blockoutbound") }, &error ) == false )
-	{
-		vWarning() << "ExamMode: échec du passage en egress block (poste NON isolé):" << error;
-		removeWindowsFirewall();
-		return false;
-	}
-
-	vInfo() << "ExamMode: firewall egress Windows actif —" << allowIps.size() << "réseau(x) autorisé(s),"
-			<< dnsIps.size() << "résolveur(s) DNS";
-	return true;
+	// Modifier la politique globale par un utilitaire en ligne de commande n'est
+	// ni transactionnel ni restaurable exactement. Jusqu'à l'intégration d'un
+	// fournisseur WFP à sous-couche dynamique, annoncer cette capacité serait une
+	// faille de sécurité. Le profil est donc refusé explicitement, sans mutation.
+	vWarning() << "ExamMode: firewall Windows refusé — fournisseur WFP transactionnel indisponible";
+	return false;
 }
 
 
@@ -1746,107 +2491,16 @@ bool ExamModeFeaturePlugin::applyWindowsFirewall()
 /** Retire les règles egress et restaure la politique par défaut. Idempotent. */
 void ExamModeFeaturePlugin::removeWindowsFirewall()
 {
-	// Backend firewall jamais posé (ni état ni script résiduel) : ne pas toucher au
-	// pare-feu — la grande majorité des déploiements n'utilisent que le PAC.
-	if( QFile::exists( windowsFirewallStateFile() ) == false &&
-		QFile::exists( windowsFirewallRestoreScript() ) == false )
-	{
-		return;
-	}
-
-	disarmWindowsFirewallDeadMan();
-
-	// Restaure la politique de sortie par défaut AVANT de retirer les règles, pour
-	// ne jamais laisser une fenêtre « sortie bloquée sans aucune règle d'exception ».
-	auto restorePolicy = QStringLiteral("blockinbound,allowoutbound");
+	// applyWindowsFirewall refuse toujours d'appliquer un pare-feu (pas de WFP
+	// transactionnel) : il n'y a donc rien à retirer ici. On se contente de signaler
+	// un marqueur d'état hérité (ancien backend netsh) qui exige une intervention
+	// manuelle. NB : la restriction d'ACL du fichier PAC, si elle est voulue, doit
+	// se faire à l'ÉCRITURE du PAC, pas ici.
 	if( QFile::exists( windowsFirewallStateFile() ) )
 	{
-		const auto saved = readJsonFile( windowsFirewallStateFile() ).value(
-			QStringLiteral("restorePolicy") ).toString();
-		if( saved.isEmpty() == false )
-		{
-			restorePolicy = saved;
-		}
+		vCritical() << "ExamMode: état firewall hérité détecté; restauration manuelle requise"
+			<< windowsFirewallStateFile();
 	}
-	QByteArray error;
-	if( runProcessSucceeds( QStringLiteral("netsh"), {
-			QStringLiteral("advfirewall"), QStringLiteral("set"), QStringLiteral("allprofiles"),
-			QStringLiteral("firewallpolicy"), restorePolicy }, &error ) == false )
-	{
-		vWarning() << "ExamMode: échec de la restauration de la politique firewall Windows:" << error;
-	}
-
-	// Suppression de nos règles (idempotent : delete d'une règle absente => non nul, ignoré).
-	QProcess deleteRule;
-	deleteRule.start( QStringLiteral("netsh"), {
-		QStringLiteral("advfirewall"), QStringLiteral("firewall"), QStringLiteral("delete"),
-		QStringLiteral("rule"), QStringLiteral("name=VeyonExamModeEgress") } );
-	deleteRule.waitForStarted( 3000 );
-	deleteRule.waitForFinished( 5000 );
-
-	QFile::remove( windowsFirewallStateFile() );
-}
-
-
-
-/**
- * Arme (ou ré-arme) une tâche planifiée à nom fixe qui restaurera la connectivité
- * à l'échéance du bail (+marge), même si Veyon meurt — équivalent Windows du
- * dead-man systemd Linux. Chaque renouvellement remplace la tâche précédente.
- * NB : schtasks attend l'heure/date au format de la locale système ; on s'aligne
- * dessus via QLocale::system(). À valider sur l'image cible (voir README).
- */
-void ExamModeFeaturePlugin::armWindowsFirewallDeadMan( int seconds ) const
-{
-	disarmWindowsFirewallDeadMan();
-
-	// Script exécuté par la tâche : restaure la politique, retire les règles, puis
-	// se supprime lui-même. Sans shell interactif (schtasks lance cmd sur le .cmd).
-	const auto script = QStringLiteral(
-		"@echo off\r\n"
-		"netsh advfirewall set allprofiles firewallpolicy blockinbound,allowoutbound\r\n"
-		"netsh advfirewall firewall delete rule name=VeyonExamModeEgress\r\n"
-		"schtasks /delete /tn veyon-exammode-failsafe /f\r\n" );
-	QDir().mkpath( QFileInfo( windowsFirewallRestoreScript() ).absolutePath() );
-	QSaveFile file( windowsFirewallRestoreScript() );
-	if( file.open( QIODevice::WriteOnly ) == false ||
-		file.write( script.toUtf8() ) < 0 || file.commit() == false )
-	{
-		vWarning() << "ExamMode: script de restauration firewall non écrit (dead-man non armé)";
-		return;
-	}
-
-	const auto trigger = QDateTime::currentDateTime().addSecs( qMax( 60, seconds ) );
-	const auto startTime = trigger.time().toString( QStringLiteral("HH:mm") );
-	const auto startDate = QLocale::system().toString( trigger.date(), QLocale::ShortFormat );
-
-	// /tr passe par cmd.exe : chemin en séparateurs natifs (backslash) pour que « / »
-	// ne soit pas pris pour un commutateur.
-	QByteArray error;
-	if( runProcessSucceeds( QStringLiteral("schtasks"), {
-			QStringLiteral("/create"), QStringLiteral("/tn"), QStringLiteral("veyon-exammode-failsafe"),
-			QStringLiteral("/tr"), QDir::toNativeSeparators( windowsFirewallRestoreScript() ),
-			QStringLiteral("/sc"), QStringLiteral("once"),
-			QStringLiteral("/st"), startTime, QStringLiteral("/sd"), startDate,
-			QStringLiteral("/ru"), QStringLiteral("SYSTEM"), QStringLiteral("/rl"), QStringLiteral("HIGHEST"),
-			QStringLiteral("/f") }, &error ) == false )
-	{
-		vWarning() << "ExamMode: dead-man planifié non armé (schtasks indisponible?):" << error;
-	}
-}
-
-
-
-void ExamModeFeaturePlugin::disarmWindowsFirewallDeadMan() const
-{
-	QProcess remove;
-	remove.start( QStringLiteral("schtasks"), {
-		QStringLiteral("/delete"), QStringLiteral("/tn"), QStringLiteral("veyon-exammode-failsafe"),
-		QStringLiteral("/f") } );
-	remove.waitForStarted( 3000 );
-	remove.waitForFinished( 5000 );
-
-	QFile::remove( windowsFirewallRestoreScript() );
 }
 
 #endif

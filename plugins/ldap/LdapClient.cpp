@@ -607,10 +607,14 @@ QString LdapClient::constructQueryFilter( const QString& filterAttribute,
 
 QString LdapClient::escapeFilterValue( const QString& filterValue )
 {
+	// RFC 4515 : échapper aussi « * » (joker) et NUL, sinon une valeur contrôlée
+	// par l'utilisateur (login/hôte) peut injecter un filtre LDAP. « \ » d'abord.
 	return QString( filterValue )
-			.replace( QStringLiteral("\\"), QStringLiteral("\\\\") )
-			.replace( QStringLiteral("("), QStringLiteral("\\(") )
-			.replace( QStringLiteral(")"), QStringLiteral("\\)") );
+			.replace( QStringLiteral("\\"), QStringLiteral("\\5c") )
+			.replace( QStringLiteral("("), QStringLiteral("\\28") )
+			.replace( QStringLiteral(")"), QStringLiteral("\\29") )
+			.replace( QStringLiteral("*"), QStringLiteral("\\2a") )
+			.replace( QChar( QChar::Null ), QStringLiteral("\\00") );
 }
 
 

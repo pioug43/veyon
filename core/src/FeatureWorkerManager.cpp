@@ -266,13 +266,20 @@ void FeatureWorkerManager::processConnection( QTcpSocket* socket )
 		{
 			Worker& worker = m_workers[message.featureUid()];
 
+			bool authorized = false;
+
 			// authenticate and set socket information
 			if (worker.socket.isNull())
 			{
-				worker.socket = socket;
+				// premier message : doit être Init avec le bon jeton. On ne fixe le
+				// socket du worker QU'EN CAS de succès, et on refuse (sans dispatcher)
+				// sinon — sans quoi un processus local usurperait le worker.
 				if (message.command() == FeatureMessage::Command::Init &&
 					message.argument(MessageArgument::AuthToken).toByteArray() == worker.token)
 				{
+					worker.socket = socket;
+					worker.authenticated = true;
+					authorized = true;
 					vDebug() << "worker at" << socket->peerPort() << "authenticated successfully";
 					sendPendingMessages();
 				}
@@ -280,10 +287,25 @@ void FeatureWorkerManager::processConnection( QTcpSocket* socket )
 				{
 					vCritical() << "worker at" << socket->peerPort() << "failed to authenticate - closing connection";
 					closeConnection(socket);
+					m_workersMutex.unlock();
+					return;
 				}
+			}
+			else
+			{
+				// messages suivants : seul le socket worker authentifié est accepté
+				// (une seconde connexion sur un slot déjà pris est rejetée).
+				authorized = worker.authenticated && worker.socket == socket;
 			}
 
 			m_workersMutex.unlock();
+
+			if (authorized == false)
+			{
+				vCritical() << "rejecting message from unauthenticated socket for" << message.featureUid();
+				closeConnection(socket);
+				return;
+			}
 
 			if (message.command<FeatureMessage::CommandType>() >= 0)
 			{

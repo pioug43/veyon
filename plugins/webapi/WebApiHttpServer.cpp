@@ -307,10 +307,14 @@ bool WebApiHttpServer::start()
 		return false;
 	}
 
-	if( m_configuration.httpsEnabled() &&
-		setupTls() == false )
+	if( m_configuration.httpsEnabled() )
 	{
-		return false;
+		// setupTls() installe un QSslServer dans m_tcpServer ; ne PAS retomber sur
+		// le QTcpServer en clair du else (sinon l'API sert en HTTP malgré HTTPS).
+		if( setupTls() == false )
+		{
+			return false;
+		}
 	}
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
 	else

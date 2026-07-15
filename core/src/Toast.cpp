@@ -1813,6 +1813,13 @@ QPoint Toast::calculatePosition()
 				}
 			}
 		}
+
+		// Le parent peut n'intersecter aucun écran (hors écran/minimisé) : sans
+		// repli, currentScreen resterait nul et serait déréférencé plus bas.
+		if (!currentScreen)
+		{
+			currentScreen = primaryScreen;
+		}
 	}
 
 	// Calculate x and y position of notification

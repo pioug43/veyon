@@ -22,19 +22,87 @@ restores its previous system state automatically when the lease expires.
 | `profileId` | string | Stable identity of the managed profile; default `legacy` |
 | `profileRevision` | non-negative integer | Monotonic revision within a profile identity |
 | `profileDigest` | SHA-256 hex string | Optional expected digest of the normalized effective profile |
+| `strict` | boolean | Opt-in: also block shells, interpreters, and system tools (see below); default `false` |
+| `networkBackend` | `hosts` or `firewall` | Linux network enforcement backend; default `hosts` |
+| `allowedNetworks` | string list | CIDR/IP allowed for egress (firewall backend) |
+| `dnsServers` | string list | DNS resolver IPs allowed through the firewall |
+| `supervisionNetworks` | string list | CIDR of the portal/master always allowed through the firewall |
 
-Application and site lists are normalized, deduplicated, and sorted before they
-are applied. Invalid site values are rejected and logged.
+Application, site, and network lists are normalized, deduplicated, and sorted
+before they are applied. Invalid values are rejected and logged. Rule counts are
+capped (512 process/URL/network rules, 4096 domains) to reject degenerate profiles.
+
+## Strict mode (opt-in)
+
+When `strict` is set, a platform-specific set of shells, script interpreters,
+terminal emulators, process-management tools, and policy-editing tools is merged
+into the block list (terminate **and** prevent-launch). This is defence in depth
+against arbitrary code execution and against a student stopping ExamMode
+(`taskmgr`, `regedit`, `sc`, terminals, `python`, `bash`, `powershell`, …). It is
+opt-in because it breaks exams that legitimately need a terminal or interpreter.
+
+## Linux firewall backend (experimental, opt-in)
+
+`networkBackend: firewall` replaces the `hosts` block list with an **nftables
+egress allow-list** (`policy drop`): only loopback, established/related
+connections, DNS to the listed `dnsServers`, and the `allowedNetworks` /
+`supervisionNetworks` CIDRs may leave the machine. Unlike the browser PAC, this
+cannot be bypassed by a direct IP connection, DoH, an alternative resolver, or a
+VPN to an arbitrary endpoint — enforcement is in the kernel and applies to every
+process, not just policy-aware browsers.
+
+It is **disabled by default and experimental**: validate it in a lab on your exact
+image before production. Safeguards:
+
+* **Fail-closed application**: if `nft` fails, no partial ruleset is left and the
+  machine stays *open* (loudly logged) rather than half-blocked.
+* **Dead-man timer**: applying the ruleset arms a fixed-name transient systemd
+  timer (`veyon-exammode-failsafe`) that deletes the nftables table at
+  `leaseSeconds + 60`. Each renewal pushes it back; if Veyon dies entirely the
+  timer still restores connectivity, so a crash never isolates the VM for good.
+* **Startup cleanup**: a residual table left by a crash is removed when the
+  service restarts.
+
+Requires root (the endpoint Service/Server component) and `nftables` +
+`systemd-run` on the image. `allowedNetworks` drive an IP allow-list, so provide
+the exam-server CIDRs (domain-only allow-listing is not possible at the firewall
+layer — that is what the Windows PAC backend is for).
 
 ## Platform capabilities
 
 | Capability | Windows | Linux | macOS |
 |---|---:|---:|---:|
 | Kill already-running applications | Yes | Yes | Yes |
-| Prevent application launch | Yes, IFEO | No | No |
-| Site block list | PAC policies | `hosts` | `hosts` |
-| Site allow list | PAC policies | Refused | Refused |
-| Crash-safe restoration | Registry/PAC backup | Marked `hosts` section | Marked `hosts` section |
+| Prevent application launch | Yes, IFEO | Yes, fanotify | No |
+| Site block list | PAC policies | `hosts` / firewall | `hosts` |
+| Site allow list | PAC policies | firewall (CIDR) | Refused |
+| Crash-safe restoration | Registry/PAC backup | Marked `hosts` / nftables dead-man | Marked `hosts` section |
+
+## Linux launch prevention (fanotify)
+
+On Linux, prevent-launch applications are enforced in the kernel via
+`fanotify` with `FAN_OPEN_EXEC_PERM`: every `execve` on the root filesystem is
+submitted to a userspace permission decision, and a blocked binary is denied
+*before* it runs. Unlike a `PATH` shim or an `LD_PRELOAD` shim, this covers all
+launch paths — interactive shell, GUI launcher, absolute path, or a portable copy
+carrying the same file name — and cannot be bypassed by ignoring `PATH`.
+
+* **Privilege / kernel**: requires root (`CAP_SYS_ADMIN`) and kernel ≥ 5.0. If
+  unavailable, `startGuarding()` fails and the plugin falls back to the periodic
+  kill loop (logged); enforcement is never a hard failure.
+* **Fail-safe**: matching is a deny-list with default-allow, so a path that cannot
+  be resolved is allowed (the OS is never broken by unknown execs). If the Veyon
+  process dies, the kernel closes the fanotify descriptor and pending execs are
+  allowed — the machine is never left unable to start programs.
+* **Matching**: by file basename (case-insensitive, `.exe` suffix tolerated).
+  Renaming a binary defeats name matching (documented limitation; a content-hash
+  mode is the natural future enhancement). The periodic kill loop remains as a
+  complementary layer for already-running and renamed processes.
+* **Scope note**: with `strict`, interactive shells and interpreters are on the
+  block list, so during an exam new `bash`/`python`/… launches are denied
+  system-wide. `sh`/`dash` are deliberately excluded to avoid breaking session and
+  system scripts. ExamMode never invokes a shell for its own operations, so strict
+  mode does not disable its firewall/DNS/registry helpers.
 
 The non-Windows allow-list mode is refused explicitly because a `hosts` file
 cannot implement a safe allow list. The same applies to structured `urlRules`

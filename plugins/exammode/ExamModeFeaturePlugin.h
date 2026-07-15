@@ -31,6 +31,7 @@
 #include "FeatureProviderInterface.h"
 
 class QTimer;
+class ExamModeLinuxExecGuard;
 
 /**
  * Mode examen (Portail VDI) : quand la supervision est activée sur un poste VDI,
@@ -65,6 +66,11 @@ public:
 		ProfileId,
 		ProfileRevision,
 		ProfileDigest,
+		Strict,				// bool : ajoute shells/interpréteurs/outils système au blocage
+		NetworkBackend,		// QString : "hosts" (défaut) | "firewall" (Linux, nftables)
+		AllowedNetworks,	// QStringList : CIDR autorisés en sortie (backend firewall)
+		DnsServers,			// QStringList : résolveurs DNS autorisés (backend firewall)
+		SupervisionNetworks,// QStringList : CIDR portail/master toujours autorisés
 	};
 	Q_ENUM(Argument)
 
@@ -78,7 +84,7 @@ public:
 
 	QVersionNumber version() const override
 	{
-		return QVersionNumber( 1, 2 );
+		return QVersionNumber( 1, 3 );
 	}
 
 	QString name() const override
@@ -128,6 +134,7 @@ private:
 						   qint64 profileRevision, const QString& expectedDigest );
 	void stopEnforcement();
 	void enforceTick();				// termine périodiquement les processus interdits
+	void auditRunningBlockedProcesses() const;	// journalise les processus interdits trouvés actifs
 	void killApplication( const QString& executable ) const;
 	// Filtrage des sites. Windows : PAC + politiques proxy navigateur + DoH off
 	// (liste noire OU blanche, robuste au contournement DoH). Linux : fichier
@@ -139,6 +146,17 @@ private:
 	bool removeHostsSection();		// retire notre section du fichier hosts (sans garde)
 	void flushDnsCache() const;		// purge le cache DNS résolveur pour un effet immédiat
 	static QString hostsFilePath();
+#if defined(Q_OS_LINUX)
+	// Backend réseau nftables (egress allow-list, fail-closed) — expérimental,
+	// activé uniquement quand networkBackend=firewall. Armé d'un dead-man
+	// systemd pour éviter de verrouiller la VM si le processus meurt.
+	bool applyLinuxFirewall();
+	void removeLinuxFirewall();
+	void armFirewallDeadMan( int seconds ) const;
+	void disarmFirewallDeadMan() const;
+	static QString firewallStateFile();
+	static QString firewallRulesetFile();
+#endif
 #if defined(Q_OS_WIN)
 	bool applyWindowsSiteFiltering( const QStringList& sites, const QString& mode );
 	void removeWindowsSiteFiltering();
@@ -170,6 +188,7 @@ private:
 
 	QTimer* m_timer{nullptr};
 	QTimer* m_watchdog{nullptr};	// lève tout si le portail cesse de ré-appliquer (fail-safe)
+	ExamModeLinuxExecGuard* m_execGuard{nullptr};	// prévention de lancement Linux (fanotify)
 	bool m_active{false};
 	QStringList m_blockedApps{};
 	QStringList m_launchPreventedApps{};
@@ -178,6 +197,10 @@ private:
 	QString m_sitesMode{QStringLiteral("block")};
 	ExamModeProfile::RuleAction m_defaultUrlAction{ExamModeProfile::RuleAction::Allow};
 	bool m_hasStructuredUrlRules{false};
+	ExamModeProfile::NetworkBackend m_networkBackend{ExamModeProfile::NetworkBackend::Hosts};
+	QStringList m_allowedNetworks{};		// CIDR autorisés en sortie (backend firewall)
+	QStringList m_dnsServers{};				// résolveurs DNS autorisés (backend firewall)
+	QStringList m_supervisionNetworks{};	// CIDR du portail/master à toujours laisser passer
 	QString m_profileId{QStringLiteral("legacy")};
 	qint64 m_profileRevision{0};
 	QString m_profileDigest{};

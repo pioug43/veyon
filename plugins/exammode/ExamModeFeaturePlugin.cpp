@@ -250,7 +250,7 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 							.addArgument( Argument::DnsServers, dnsServers )
 							.addArgument( Argument::SupervisionNetworks, supervisionNetworks )
 							.addArgument( Argument::SessionId, sessionId )
-							.addArgument( Argument::Sequence, sequence )
+							.addArgument( Argument::Sequence, static_cast<qlonglong>( sequence ) )
 							.addArgument( Argument::IssuedAt, issuedAt )
 							.addArgument( Argument::ExpiresAt, expiresAt )
 							.addArgument( Argument::HighSecurity, highSecurity )
@@ -291,7 +291,7 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 		const auto sequence = arguments.value( argToString( Argument::Sequence ) ).toULongLong();
 		FeatureMessage outbound{ featureUid, FeatureCommand::StopExam };
 		outbound.addArgument( Argument::SessionId, sessionId )
-			.addArgument( Argument::Sequence, sequence )
+			.addArgument( Argument::Sequence, static_cast<qlonglong>( sequence ) )
 			.addArgument( Argument::IssuedAt, arguments.value( argToString( Argument::IssuedAt ), now ) )
 			.addArgument( Argument::ExpiresAt, arguments.value( argToString( Argument::ExpiresAt ), now + 300000 ) )
 			.addArgument( Argument::HighSecurity, arguments.value( argToString( Argument::HighSecurity ) ) )
@@ -699,7 +699,7 @@ FeatureMessage ExamModeFeaturePlugin::statusMessage() const
 		.addArgument( Argument::Capabilities, m_capabilities )
 		.addArgument( Argument::BackendResults, m_backendResults )
 		.addArgument( Argument::SessionId, m_statusSessionId )
-		.addArgument( Argument::Sequence, m_statusSequence )
+		.addArgument( Argument::Sequence, static_cast<qlonglong>( m_statusSequence ) )
 		.addArgument( Argument::Timestamp, m_statusTimestampMs );
 	return FeatureMessage{ message };
 }

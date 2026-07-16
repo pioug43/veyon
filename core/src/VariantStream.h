@@ -47,6 +47,7 @@ private:
 	bool checkByteArray();
 	bool checkInt();
 	bool checkLong();
+	bool checkULong();
 	bool checkRect();
 	bool checkString();
 	bool checkStringList();

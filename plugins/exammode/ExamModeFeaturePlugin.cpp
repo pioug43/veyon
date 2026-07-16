@@ -1054,10 +1054,34 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	{
 		m_driftTimer = new QTimer( this );
 		connect( m_driftTimer, &QTimer::timeout, this, [this]() {
-			if( m_active && verifyEnforcement() == false )
+			if( m_active == false )
+			{
+				return;
+			}
+			if( verifyEnforcement() == false )
 			{
 				setStatus( QStringLiteral("DEGRADED"), QStringLiteral("ENFORCEMENT_DRIFT"),
 					QStringLiteral("A mandatory backend drifted from the applied policy") );
+				return;
+			}
+			// Contrôle plein écran du client VDI Omnissa Horizon : hors plein écran,
+			// l'étudiant peut atteindre l'hôte physique → on remonte une erreur.
+			// Unknown (client non visible / hors session interactive) = non concluant,
+			// donc PAS une violation (évite les faux positifs).
+			if( ExamModeWindowsNative::vdiClientFullscreenState() ==
+					ExamModeWindowsNative::VdiClientState::NotFullscreen )
+			{
+				setStatus( QStringLiteral("DEGRADED"), QStringLiteral("VDI_CLIENT_NOT_FULLSCREEN"),
+					QStringLiteral("The Omnissa Horizon client is not in full screen") );
+				return;
+			}
+			// Application saine et client de nouveau plein écran (ou non concluant) :
+			// on lève une dégradation due UNIQUEMENT au plein écran (alerte
+			// auto-résolutive dès que l'étudiant repasse en plein écran).
+			if( m_status == QStringLiteral("DEGRADED") &&
+				m_errorCode == QStringLiteral("VDI_CLIENT_NOT_FULLSCREEN") )
+			{
+				setStatus( QStringLiteral("APPLIED"), {}, {}, m_backendResults );
 			}
 		} );
 	}

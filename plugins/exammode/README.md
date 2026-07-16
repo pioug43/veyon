@@ -176,6 +176,22 @@ Every start/stop produces a per-endpoint status reply: `PENDING`, `APPLIED`,
 digest, capability map, backend results, session/sequence, and timestamp. The Web
 API feature-status route merges this detail with the ordinary `active` flag.
 
+## VDI client full-screen check (Windows)
+
+While an exam is active, the 10-second drift monitor also verifies that the
+Omnissa Horizon (formerly VMware Horizon) VDI client occupies an entire monitor.
+A windowed or merely *maximized* client leaves the physical host reachable behind
+it, so the endpoint reports `DEGRADED` with error code
+`VDI_CLIENT_NOT_FULLSCREEN`. The check enumerates visible top-level windows,
+matches the client process (`vmware-view` / `omnissa` / `horizon`+`client`), and
+compares the window rectangle to the monitor's full bounds (`rcMonitor`, taskbar
+included) — so a maximized-to-work-area window is correctly flagged as *not*
+full screen. When no client window is visible (client absent, or the monitor runs
+outside the interactive session, e.g. as SYSTEM) the result is *inconclusive* and
+raises no violation, avoiding false positives. The alert is self-resolving: once
+the student returns the client to full screen the status clears back to `APPLIED`.
+The check is Windows-only (no-op elsewhere).
+
 IFEO and fanotify rules in this plugin match executable basenames and are exposed
 as `process.preventLaunch.basename`, not as strong application allow-listing. A
 `highSecurity` profile requesting process prevention must therefore include a

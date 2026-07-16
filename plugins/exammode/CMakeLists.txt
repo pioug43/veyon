@@ -16,7 +16,9 @@ build_veyon_plugin(exammode
 	)
 
 if(WIN32)
-	target_link_libraries(exammode PRIVATE advapi32)
+	# advapi32 : registre/ACL ; user32 : énumération de fenêtres + moniteurs
+	# (contrôle plein écran du client VDI Omnissa Horizon).
+	target_link_libraries(exammode PRIVATE advapi32 user32)
 endif()
 
 if(WITH_TESTS)

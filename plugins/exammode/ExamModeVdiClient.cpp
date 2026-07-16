@@ -25,22 +25,26 @@
 #include "ExamModeVdiClient.h"
 
 #include <QFile>
+#include <QStringList>
+#include <QVector>
 
 #if defined(Q_OS_WIN)
 #include <string>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QStringList>
-#include <QVector>
 #include <qt_windows.h>
 #include <wtsapi32.h>
 #elif defined(Q_OS_LINUX) && defined(EXAMMODE_HAVE_X11)
+#include <QDir>
 #include <QProcess>
 #include <cstring>
 #include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#if defined(EXAMMODE_HAVE_XRANDR)
+#include <X11/extensions/Xrandr.h>
+#endif
 #elif defined(Q_OS_LINUX)
 #include <QProcess>
 #endif
@@ -60,6 +64,114 @@ namespace
 		   imageBasenameLower.contains( QLatin1String("omnissa") ) ||
 		   ( imageBasenameLower.contains( QLatin1String("horizon") ) &&
 			 imageBasenameLower.contains( QLatin1String("client") ) );
+}
+
+
+// --- Topologies d'écrans (partagé Windows/Linux, mode invité VDI) ----------
+// L'agent Horizon publie les écrans PHYSIQUES du poste étudiant tels que
+// rapportés par le client (« {largeur,hauteur,gauche,haut,bpp,primaire},… ») ;
+// chaque plateforme fournit ensuite la topologie COURANTE réellement affichée
+// par la session distante. Couverture partielle = une portion de l'hôte
+// physique reste visible/accessible → NotFullscreen.
+
+struct Rect
+{
+	long left{0};
+	long top{0};
+	long width{0};
+	long height{0};
+};
+
+
+// Parse « {w,h,x,y,bpp,primaire},{...} » (ViewClient_Displays.Topology).
+[[maybe_unused]] QVector<Rect> parsePhysicalTopology( const QString& value )
+{
+	QVector<Rect> rects;
+	int i = 0;
+	while( ( i = value.indexOf( QLatin1Char('{'), i ) ) >= 0 )
+	{
+		const int end = value.indexOf( QLatin1Char('}'), i );
+		if( end < 0 )
+		{
+			break;
+		}
+		const auto fields = value.mid( i + 1, end - i - 1 ).split( QLatin1Char(',') );
+		if( fields.size() >= 4 )
+		{
+			Rect r;
+			r.width  = fields[0].trimmed().toLong();
+			r.height = fields[1].trimmed().toLong();
+			r.left   = fields[2].trimmed().toLong();
+			r.top    = fields[3].trimmed().toLong();
+			if( r.width > 0 && r.height > 0 )
+			{
+				rects.append( r );
+			}
+		}
+		i = end + 1;
+	}
+	return rects;
+}
+
+
+// Étendue (boîte englobante) d'un ensemble de rectangles.
+[[maybe_unused]] void boundingBox( const QVector<Rect>& rects, long& width, long& height )
+{
+	width = 0;
+	height = 0;
+	if( rects.isEmpty() )
+	{
+		return;
+	}
+	long minX = rects.first().left;
+	long minY = rects.first().top;
+	long maxX = rects.first().left + rects.first().width;
+	long maxY = rects.first().top + rects.first().height;
+	for( const auto& r : rects )
+	{
+		minX = qMin( minX, r.left );
+		minY = qMin( minY, r.top );
+		maxX = qMax( maxX, r.left + r.width );
+		maxY = qMax( maxY, r.top + r.height );
+	}
+	width = maxX - minX;
+	height = maxY - minY;
+}
+
+
+// Verdict plein écran : la session distante (current) couvre-t-elle tout le
+// matériel physique du poste étudiant (physical) ? trustCurrentCount=false
+// quand « current » est une simple boîte englobante (pas une énumération
+// d'écrans, ex. X11 sans XRandR) : le comptage d'écrans serait faussé.
+[[maybe_unused]] State compareTopologies( const QVector<Rect>& physical, const QVector<Rect>& current,
+										  bool trustCurrentCount = true )
+{
+	if( physical.isEmpty() || current.isEmpty() )
+	{
+		return State::Unknown;
+	}
+	// Moins d'écrans distants que d'écrans physiques → au moins un moniteur du
+	// poste affiche l'hôte physique (hors de la VM) → triche possible.
+	if( trustCurrentCount && current.size() < physical.size() )
+	{
+		return State::NotFullscreen;
+	}
+	long physicalWidth = 0;
+	long physicalHeight = 0;
+	long currentWidth = 0;
+	long currentHeight = 0;
+	boundingBox( physical, physicalWidth, physicalHeight );
+	boundingBox( current, currentWidth, currentHeight );
+	// La session distante doit couvrir toute l'étendue physique (tolérance 5 %
+	// pour l'échelle DPI / arrondis). Sinon : client fenêtré ou partiel → une
+	// partie de l'hôte reste visible → triche possible.
+	constexpr double coverageRatio = 0.95;
+	if( currentWidth < physicalWidth * coverageRatio ||
+		currentHeight < physicalHeight * coverageRatio )
+	{
+		return State::NotFullscreen;
+	}
+	return State::Fullscreen;
 }
 
 }
@@ -91,15 +203,6 @@ namespace
 
 namespace
 {
-
-struct Rect
-{
-	long left{0};
-	long top{0};
-	long width{0};
-	long height{0};
-};
-
 
 // Lit une valeur chaîne (REG_SZ/EXPAND_SZ) sous HKLM. Vue 64 bits forcée : les
 // données Horizon vivent dans la ruche native même si Veyon était compilé 32 bits.
@@ -167,37 +270,6 @@ const QStringList& vdiRegistryRoots()
 }
 
 
-// Parse « {w,h,x,y,bpp,primaire},{...} » (ViewClient_Displays.Topology).
-QVector<Rect> parsePhysicalTopology( const QString& value )
-{
-	QVector<Rect> rects;
-	int i = 0;
-	while( ( i = value.indexOf( QLatin1Char('{'), i ) ) >= 0 )
-	{
-		const int end = value.indexOf( QLatin1Char('}'), i );
-		if( end < 0 )
-		{
-			break;
-		}
-		const auto fields = value.mid( i + 1, end - i - 1 ).split( QLatin1Char(',') );
-		if( fields.size() >= 4 )
-		{
-			Rect r;
-			r.width  = fields[0].trimmed().toLong();
-			r.height = fields[1].trimmed().toLong();
-			r.left   = fields[2].trimmed().toLong();
-			r.top    = fields[3].trimmed().toLong();
-			if( r.width > 0 && r.height > 0 )
-			{
-				rects.append( r );
-			}
-		}
-		i = end + 1;
-	}
-	return rects;
-}
-
-
 // Parse le JSON ViewClient_Current_Topology : { "Displays":[{x,y,width,height},...] }.
 QVector<Rect> parseCurrentTopologyJson( const QString& value )
 {
@@ -245,31 +317,6 @@ QVector<Rect> guestDesktopMonitors()
 	QVector<Rect> rects;
 	EnumDisplayMonitors( nullptr, nullptr, collectMonitorProc, reinterpret_cast<LPARAM>( &rects ) );
 	return rects;
-}
-
-
-// Étendue (boîte englobante) d'un ensemble de rectangles.
-void boundingBox( const QVector<Rect>& rects, long& width, long& height )
-{
-	width = 0;
-	height = 0;
-	if( rects.isEmpty() )
-	{
-		return;
-	}
-	long minX = rects.first().left;
-	long minY = rects.first().top;
-	long maxX = rects.first().left + rects.first().width;
-	long maxY = rects.first().top + rects.first().height;
-	for( const auto& r : rects )
-	{
-		minX = qMin( minX, r.left );
-		minY = qMin( minY, r.top );
-		maxX = qMax( maxX, r.left + r.width );
-		maxY = qMax( maxY, r.top + r.height );
-	}
-	width = maxX - minX;
-	height = maxY - minY;
 }
 
 
@@ -332,36 +379,7 @@ State fullscreenState()
 		return State::Unknown;
 	}
 	// Ce que la session distante occupe réellement en ce moment.
-	const auto current = readCurrentSessionTopology();
-	if( current.isEmpty() )
-	{
-		return State::Unknown;
-	}
-
-	// Moins d'écrans distants que d'écrans physiques → au moins un moniteur du
-	// poste affiche l'hôte physique (hors de la VM) → triche possible.
-	if( current.size() < physical.size() )
-	{
-		return State::NotFullscreen;
-	}
-
-	long physicalWidth = 0;
-	long physicalHeight = 0;
-	long currentWidth = 0;
-	long currentHeight = 0;
-	boundingBox( physical, physicalWidth, physicalHeight );
-	boundingBox( current, currentWidth, currentHeight );
-
-	// La session distante doit couvrir toute l'étendue physique (tolérance 5 %
-	// pour l'échelle DPI / arrondis). Sinon : client fenêtré ou partiel → une
-	// partie de l'hôte reste visible → triche possible.
-	constexpr double coverageRatio = 0.95;
-	if( currentWidth < physicalWidth * coverageRatio ||
-		currentHeight < physicalHeight * coverageRatio )
-	{
-		return State::NotFullscreen;
-	}
-	return State::Fullscreen;
+	return compareTopologies( physical, readCurrentSessionTopology() );
 }
 
 
@@ -397,14 +415,20 @@ void showSessionMessage( const QString& title, const QString& text, int timeoutS
 #elif defined(Q_OS_LINUX) && defined(EXAMMODE_HAVE_X11)
 // ==========================================================================
 
-// NOTE : sur un invité VDI Linux, le client Horizon tourne lui aussi sur le poste
-// physique et n'apparaît PAS dans le serveur X de la VM ; cette énumération renvoie
-// donc Unknown en session VDI réelle (même limite que l'ancien code Windows).
-// L'équivalent des clés registre Windows (ViewClient_Displays.Topology /
-// Current_Topology) reste à brancher côté Linux (variables d'environnement de
-// session ViewClient_* / fichiers de l'agent). Le code X11 ci-dessous ne rend un
-// verdict que si Veyon s'exécute directement sur le poste hébergeant le client
-// (déploiement sur machine physique).
+// Deux modes de déploiement couverts :
+//
+// 1. INVITÉ VDI Linux : le client Horizon tourne sur le poste PHYSIQUE de
+//    l'étudiant, pas dans la VM — l'énumération de fenêtres X11 est vaine. On
+//    raisonne comme l'agent Windows (registre) : l'agent Horizon pour Linux
+//    publie les informations client (ViewClient_*) dans l'ENVIRONNEMENT des
+//    processus de la session distante. On y lit ViewClient_Displays.Topology
+//    (écrans physiques du poste étudiant, balayage /proc/<pid>/environ — le
+//    composant Veyon session y a accès pour ses propres processus, le service
+//    root pour tous) et on la compare à la topologie COURANTE réellement
+//    affichée par la session (XRandR ; repli : étendue de l'écran X).
+//
+// 2. POSTE PHYSIQUE : le client tourne localement → détection fenêtre
+//    EWMH/X11 ci-dessous (verdict seulement dans ce déploiement).
 
 namespace
 {
@@ -541,6 +565,112 @@ bool windowIsFullscreen( Display* display, Window window, int screenWidth, int s
 		   ( y + attributes.height ) >= screenHeight;
 }
 
+
+// --- Invité VDI : informations client publiées par l'agent Horizon ---------
+
+// Valeur d'une variable d'environnement ViewClient_* dans les processus de la
+// session distante (/proc/<pid>/environ). Le dernier pid porteur est mémorisé
+// pour éviter un balayage complet de /proc à chaque tick (2 s).
+QString sessionEnvironmentValue( const QByteArray& name )
+{
+	static long cachedPid = 0;
+	const auto readEnviron = [&name]( long pid ) -> QString {
+		QFile file( QStringLiteral("/proc/%1/environ").arg( pid ) );
+		if( file.open( QIODevice::ReadOnly ) == false )
+		{
+			return {};
+		}
+		const auto entries = file.readAll().split( '\0' );
+		for( const auto& entry : entries )
+		{
+			if( entry.size() > name.size() && entry.startsWith( name ) &&
+				entry.at( name.size() ) == '=' )
+			{
+				return QString::fromLocal8Bit( entry.mid( name.size() + 1 ) );
+			}
+		}
+		return {};
+	};
+	if( cachedPid > 0 )
+	{
+		const auto value = readEnviron( cachedPid );
+		if( value.isEmpty() == false )
+		{
+			return value;
+		}
+		cachedPid = 0;		// processus disparu : re-balayer
+	}
+	const auto entries = QDir( QStringLiteral("/proc") ).entryList( QDir::Dirs | QDir::NoDotAndDotDot );
+	for( const auto& entry : entries )
+	{
+		bool numeric = false;
+		const long pid = entry.toLong( &numeric );
+		if( numeric == false || pid <= 0 )
+		{
+			continue;
+		}
+		const auto value = readEnviron( pid );
+		if( value.isEmpty() == false )
+		{
+			cachedPid = pid;
+			return value;
+		}
+	}
+	return {};
+}
+
+
+// Écrans PHYSIQUES du poste étudiant, rapportés par le client Horizon (nom
+// officiel avec point ; variante underscore acceptée par prudence).
+QVector<Rect> readClientPhysicalTopologyLinux()
+{
+	static const QByteArray names[]{
+		QByteArrayLiteral("ViewClient_Displays.Topology"),
+		QByteArrayLiteral("ViewClient_Displays_Topology"),
+	};
+	for( const auto& name : names )
+	{
+		const auto rects = parsePhysicalTopology( sessionEnvironmentValue( name ) );
+		if( rects.isEmpty() == false )
+		{
+			return rects;
+		}
+	}
+	return {};
+}
+
+
+// Topologie COURANTE réellement affichée par la session distante : écrans
+// XRandR si disponible (enumerated=true, comptage fiable), sinon étendue de
+// l'écran X (boîte englobante seule).
+QVector<Rect> readCurrentSessionTopologyLinux( Display* display, bool* enumerated )
+{
+	QVector<Rect> rects;
+	*enumerated = false;
+	const int screen = DefaultScreen( display );
+#if defined(EXAMMODE_HAVE_XRANDR)
+	int monitorCount = 0;
+	XRRMonitorInfo* monitors = XRRGetMonitors( display, RootWindow( display, screen ), True, &monitorCount );
+	if( monitors != nullptr )
+	{
+		for( int i = 0; i < monitorCount; ++i )
+		{
+			if( monitors[i].width > 0 && monitors[i].height > 0 )
+			{
+				rects.append( Rect{ monitors[i].x, monitors[i].y, monitors[i].width, monitors[i].height } );
+			}
+		}
+		XRRFreeMonitors( monitors );
+		*enumerated = rects.isEmpty() == false;
+	}
+#endif
+	if( rects.isEmpty() )
+	{
+		rects.append( Rect{ 0, 0, DisplayWidth( display, screen ), DisplayHeight( display, screen ) } );
+	}
+	return rects;
+}
+
 }
 
 
@@ -551,6 +681,19 @@ State fullscreenState()
 	{
 		return State::Unknown;
 	}
+
+	// 1) Invité VDI : topologie physique du poste étudiant publiée par l'agent
+	// Horizon (environnement de session) — même raisonnement que l'agent Windows.
+	const auto physical = readClientPhysicalTopologyLinux();
+	if( physical.isEmpty() == false )
+	{
+		bool enumerated = false;
+		const auto current = readCurrentSessionTopologyLinux( display, &enumerated );
+		XCloseDisplay( display );
+		return compareTopologies( physical, current, enumerated );
+	}
+
+	// 2) Poste physique : le client tourne localement → détection fenêtre EWMH.
 	const int screen = DefaultScreen( display );
 	const Window root = RootWindow( display, screen );
 	const int screenWidth = DisplayWidth( display, screen );
@@ -583,6 +726,14 @@ State fullscreenState()
 
 bool forceFullscreen()
 {
+	// Invité VDI : le client tourne sur le poste physique, hors d'atteinte de
+	// la VM → simple constat de l'état (comme l'agent Windows) ; le consommateur
+	// enchaîne message + délai de grâce.
+	if( readClientPhysicalTopologyLinux().isEmpty() == false )
+	{
+		return fullscreenState() == State::Fullscreen;
+	}
+
 	Display* display = openDisplay();
 	if( display == nullptr )
 	{

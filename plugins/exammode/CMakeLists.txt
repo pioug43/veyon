@@ -32,6 +32,13 @@ if(UNIX AND NOT APPLE)
 		target_compile_definitions(exammode PRIVATE EXAMMODE_HAVE_X11)
 		target_include_directories(exammode PRIVATE ${X11_INCLUDE_DIR})
 		target_link_libraries(exammode PRIVATE ${X11_LIBRARIES})
+		# XRandR (optionnel) : énumération des écrans de la session distante pour
+		# la détection plein écran en invité VDI Linux (comptage d'écrans fiable ;
+		# sans lui, repli sur la seule boîte englobante de l'écran X).
+		if(X11_Xrandr_FOUND)
+			target_compile_definitions(exammode PRIVATE EXAMMODE_HAVE_XRANDR)
+			target_link_libraries(exammode PRIVATE ${X11_Xrandr_LIB})
+		endif()
 	endif()
 endif()
 

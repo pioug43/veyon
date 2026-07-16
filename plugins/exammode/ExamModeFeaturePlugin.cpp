@@ -1067,8 +1067,12 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			}
 			if( verifyEnforcement() == false )
 			{
+				// Les détails (backend/clé fautive) permettent le diagnostic à
+				// distance via GET /feature (ex. valeur IFEO retirée par une GPO
+				// ou Defender) — ils voyagent dans backendResults.
 				setStatus( QStringLiteral("DEGRADED"), QStringLiteral("ENFORCEMENT_DRIFT"),
-					QStringLiteral("A mandatory backend drifted from the applied policy") );
+					QStringLiteral("A mandatory backend drifted from the applied policy"),
+					m_lastDriftDetails );
 			}
 		} );
 	}
@@ -1255,10 +1259,21 @@ bool ExamModeFeaturePlugin::stopEnforcement( const ExamModeSession::Envelope& en
 
 bool ExamModeFeaturePlugin::verifyEnforcement()
 {
+	// Détails de la première dérive constatée, remontés dans le statut
+	// (diagnostic à distance : QUEL backend, QUELLE clé — ex. valeur IFEO
+	// retirée par Defender/GPO). Vidés quand tout est sain.
+	m_lastDriftDetails.clear();
 #if defined(Q_OS_WIN)
-	const auto registryStateHealthy = []( const QString& path ) {
+	const auto registryStateHealthy = [this]( const QString& path, const QString& backend ) {
 		const auto entries = readJsonFile( path ).value( QStringLiteral("entries") ).toArray();
-		if( entries.isEmpty() ) { return false; }
+		if( entries.isEmpty() )
+		{
+			m_lastDriftDetails = QVariantMap{
+				{ QStringLiteral("driftBackend"), backend },
+				{ QStringLiteral("driftReason"), QStringLiteral("state file missing or empty") },
+			};
+			return false;
+		}
 		for( const auto& value : entries )
 		{
 			const auto entry = value.toObject();
@@ -1271,6 +1286,15 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 					expected.value( QStringLiteral("type") ).toString(), Qt::CaseInsensitive ) != 0 ||
 				current.value( QStringLiteral("data") ).toString() != expected.value( QStringLiteral("data") ).toString() )
 			{
+				m_lastDriftDetails = QVariantMap{
+					{ QStringLiteral("driftBackend"), backend },
+					{ QStringLiteral("driftKey"), entry.value( QStringLiteral("key") ).toString() },
+					{ QStringLiteral("driftValueName"), entry.value( QStringLiteral("name") ).toString() },
+					{ QStringLiteral("currentOk"), current.value( QStringLiteral("ok") ).toBool() },
+					{ QStringLiteral("currentExists"), current.value( QStringLiteral("exists") ).toBool() },
+					{ QStringLiteral("currentType"), current.value( QStringLiteral("type") ).toString() },
+					{ QStringLiteral("currentData"), current.value( QStringLiteral("data") ).toString() },
+				};
 				return false;
 			}
 		}
@@ -1283,7 +1307,8 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 		m_urlRules.isEmpty() == false || m_defaultUrlAction == ExamModeProfile::RuleAction::Block ) )
 	{
 #if defined(Q_OS_WIN)
-		networkHealthy = registryStateHealthy( siteFilterStateFile() ) && QFile::exists( pacFilePath() );
+		networkHealthy = registryStateHealthy( siteFilterStateFile(), QStringLiteral("network") ) &&
+			QFile::exists( pacFilePath() );
 #elif defined(Q_OS_LINUX)
 		if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall )
 		{
@@ -1305,14 +1330,29 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 			networkHealthy = hosts.open( QIODevice::ReadOnly | QIODevice::Text ) &&
 				hosts.readAll().contains( HostsMarkerBegin );
 		}
+		if( networkHealthy == false && m_lastDriftDetails.isEmpty() )
+		{
+			m_lastDriftDetails = QVariantMap{
+				{ QStringLiteral("driftBackend"), QStringLiteral("network") },
+				{ QStringLiteral("driftReason"), QStringLiteral("network filtering state lost") },
+			};
+		}
 	}
 
 	bool launchHealthy = true;
 #if defined(Q_OS_WIN)
-	launchHealthy = m_launchPreventedApps.isEmpty() || registryStateHealthy( launchPreventionStateFile() );
+	launchHealthy = m_launchPreventedApps.isEmpty() ||
+		registryStateHealthy( launchPreventionStateFile(), QStringLiteral("launchPrevention") );
 #elif defined(Q_OS_LINUX)
 	launchHealthy = m_launchPreventedApps.isEmpty() ||
 		( m_execGuard && m_execGuard->isActive() && m_execGuard->isHealthy() && m_execGuard->refreshMounts() );
+	if( launchHealthy == false && m_lastDriftDetails.isEmpty() )
+	{
+		m_lastDriftDetails = QVariantMap{
+			{ QStringLiteral("driftBackend"), QStringLiteral("launchPrevention") },
+			{ QStringLiteral("driftReason"), QStringLiteral("exec guard inactive or unhealthy") },
+		};
+	}
 #endif
 	if( networkHealthy && launchHealthy )
 	{

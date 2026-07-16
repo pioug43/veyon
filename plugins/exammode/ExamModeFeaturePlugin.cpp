@@ -1063,12 +1063,33 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			{
 				setStatus( QStringLiteral("DEGRADED"), QStringLiteral("ENFORCEMENT_DRIFT"),
 					QStringLiteral("A mandatory backend drifted from the applied policy") );
+			}
+		} );
+	}
+	m_driftTimer->start( 10000 );
+
+	// Contrôle plein écran du client VDI Omnissa Horizon, dans son PROPRE timer
+	// rapide : hors plein écran, l'étudiant peut atteindre l'hôte physique → on
+	// remonte une erreur au plus vite. La vérification est une simple lecture du
+	// registre de l'agent Horizon (quasi gratuite), contrairement à
+	// verifyEnforcement() qui reste sur le driftTimer à 10 s.
+	// Unknown (client non visible / hors session interactive) = non concluant,
+	// donc PAS une violation (évite les faux positifs).
+	if( m_fullscreenTimer == nullptr )
+	{
+		m_fullscreenTimer = new QTimer( this );
+		connect( m_fullscreenTimer, &QTimer::timeout, this, [this]() {
+			if( m_active == false )
+			{
 				return;
 			}
-			// Contrôle plein écran du client VDI Omnissa Horizon : hors plein écran,
-			// l'étudiant peut atteindre l'hôte physique → on remonte une erreur.
-			// Unknown (client non visible / hors session interactive) = non concluant,
-			// donc PAS une violation (évite les faux positifs).
+			// Ne pas masquer une dérive d'enforcement en cours : le plein écran ne
+			// touche au statut que si la dégradation est due au plein écran.
+			if( m_status == QStringLiteral("DEGRADED") &&
+				m_errorCode != QStringLiteral("VDI_CLIENT_NOT_FULLSCREEN") )
+			{
+				return;
+			}
 			const auto vdiState = ExamModeVdiClient::fullscreenState();
 			if( vdiState == ExamModeVdiClient::State::NotFullscreen )
 			{
@@ -1093,7 +1114,7 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			}
 		} );
 	}
-	m_driftTimer->start( 10000 );
+	m_fullscreenTimer->start( 2000 );
 
 	enforceTick();		// passe immédiate sur les processus interdits
 	QVariantMap results{
@@ -1153,6 +1174,10 @@ void ExamModeFeaturePlugin::stopEnforcement()
 	if( m_driftTimer )
 	{
 		m_driftTimer->stop();
+	}
+	if( m_fullscreenTimer )
+	{
+		m_fullscreenTimer->stop();
 	}
 	removeLaunchPrevention();
 	removeSiteFiltering();

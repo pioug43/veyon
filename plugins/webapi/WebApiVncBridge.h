@@ -37,8 +37,10 @@ class QWebSocket;
 
 // Bridges a single noVNC client (connected via WebSocket) to an already
 // authenticated VncConnection: implements a minimal RFB server (security type
-// None, Raw encoding only) and re-serves the framebuffer of the upstream
-// VncConnection while forwarding pointer/keyboard/clipboard input to it.
+// None, encodages Raw et Tight JPEG) and re-serves the framebuffer of the
+// upstream VncConnection while forwarding pointer/keyboard/clipboard input to
+// it. Le curseur distant (forme RichCursor + position PointerPos amont, plus
+// l'écho des événements pointeur du client) est composité dans les trames.
 class WebApiVncBridge : public QObject
 {
 	Q_OBJECT
@@ -86,6 +88,9 @@ private:
 	enum RfbEncoding
 	{
 		EncodingRaw = 0,
+		EncodingTight = 7,
+		PseudoEncodingJpegQualityLow = -32,		// -32..-23 = niveau de qualité JPEG 0..9
+		PseudoEncodingJpegQualityHigh = -23,
 		PseudoEncodingCursor = -239,
 		PseudoEncodingDesktopSize = -223,
 		PseudoEncodingExtendedDesktopSize = -308
@@ -105,11 +110,15 @@ private:
 	void onFramebufferUpdateComplete();
 	void onFramebufferSizeChanged( int w, int h );
 	void onCursorShapeUpdated( const QImage& cursorShape, int xh, int yh );
+	void onCursorPosChanged( int x, int y );
 
 	void trySendFramebufferUpdate();
-	void sendCursorUpdate();		// pousse la forme du curseur (Cursor pseudo-encoding)
-	QByteArray encodeCursorRect( const QImage& cursor ) const;
+	QRect cursorRect() const;		// zone du curseur composité dans le framebuffer
+	void markCursorDirty();			// invalide l'ancienne et la nouvelle zone du curseur
 	QByteArray encodeRawRect( const QImage& image, const QRect& rect ) const;
+	int appendRect( QByteArray& rectsData, const QImage& image, const QRect& rect );
+	QByteArray encodeTightJpegRect( const QImage& image, const QRect& rect ) const;
+	bool clientFormatIsNative() const;
 	void appendUint16( QByteArray& data, quint16 value ) const;
 	void appendUint32( QByteArray& data, quint32 value ) const;
 
@@ -125,10 +134,13 @@ private:
 
 	bool m_supportsDesktopSize{false};
 	bool m_supportsExtendedDesktopSize{false};
-	bool m_supportsCursor{false};		// client noVNC accepte le Cursor pseudo-encoding
+	bool m_supportsTight{false};		// client accepte l'encodage Tight (JPEG)
+	int m_jpegQuality{80};				// qualité JPEG issue du pseudo-encoding qualité du client
 	bool m_haveCursor{false};			// une forme de curseur a déjà été reçue de l'hôte
 	QImage m_cursorShape{};
 	QPoint m_cursorHotspot{};
+	QPoint m_cursorPos{-1, -1};			// position hotspot du curseur distant (PointerPos amont + échos pointeur)
+	QRect m_paintedCursorRect{};		// zone où le curseur a été composité dans la dernière trame envoyée
 
 	bool m_updatePending{false};
 	bool m_forceFullUpdate{true};

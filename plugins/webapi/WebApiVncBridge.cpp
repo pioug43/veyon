@@ -23,7 +23,9 @@
  */
 
 #include <QAbstractSocket>
+#include <QBuffer>
 #include <QImage>
+#include <QPainter>
 #include <QtEndian>
 #include <QWebSocket>
 
@@ -44,6 +46,9 @@ WebApiVncBridge::WebApiVncBridge( QWebSocket* socket, ComputerControlInterface::
 
 	connect( m_socket, &QWebSocket::binaryMessageReceived, this, &WebApiVncBridge::handleBinaryMessage );
 	connect( m_socket, &QWebSocket::disconnected, this, &QObject::deleteLater );
+	// backpressure : une trame différée (socket encombré) est renvoyée dès que
+	// l'écriture progresse — sans ce signal elle attendrait le prochain update hôte
+	connect( m_socket, &QWebSocket::bytesWritten, this, &WebApiVncBridge::trySendFramebufferUpdate );
 
 	auto* vncConnection = m_controlInterface ? m_controlInterface->vncConnection() : nullptr;
 	if( vncConnection == nullptr )
@@ -63,10 +68,13 @@ WebApiVncBridge::WebApiVncBridge( QWebSocket* socket, ComputerControlInterface::
 			 this, &WebApiVncBridge::onFramebufferSizeChanged, Qt::QueuedConnection );
 	connect( vncConnection, &VncConnection::cursorShapeUpdated,
 			 this, &WebApiVncBridge::onCursorShapeUpdated, Qt::QueuedConnection );
+	connect( vncConnection, &VncConnection::cursorPosChanged,
+			 this, &WebApiVncBridge::onCursorPosChanged, Qt::QueuedConnection );
 
-	// demander la forme du curseur à l'hôte (Cursor pseudo-encoding côté amont) :
-	// sinon le curseur n'est ni dans le framebuffer ni transmis, et noVNC n'affiche
-	// aucune souris. On le relaie ensuite au client noVNC (cf. onCursorShapeUpdated).
+	// demander forme (RichCursor) et position (PointerPos) du curseur à l'hôte :
+	// le chemin de capture GDI n'inclut pas le curseur dans le framebuffer. On le
+	// COMPOSITE ensuite dans les trames sortantes à sa position distante réelle
+	// (cf. appendRect) — le client noVNC garde son point local comme repère.
 	// setUseRemoteCursor modifie l'état d'une connexion vivant dans SON thread ; on
 	// le planifie là-bas (comme setLiveUpdateMode) — les signaux sont déjà reçus en
 	// QueuedConnection, un appel direct ici serait une data race.
@@ -307,18 +315,19 @@ bool WebApiVncBridge::parseClientMessage()
 			{
 				m_supportsExtendedDesktopSize = true;
 			}
-			else if( encoding == PseudoEncodingCursor )
+			else if( encoding == EncodingTight )
 			{
-				m_supportsCursor = true;
+				m_supportsTight = true;
+			}
+			else if( encoding >= PseudoEncodingJpegQualityLow && encoding <= PseudoEncodingJpegQualityHigh )
+			{
+				// niveau 0..9 annoncé par le client (noVNC : qualityLevel) ;
+				// table de correspondance JPEG type TigerVNC
+				static constexpr int jpegQualities[] = { 15, 29, 41, 42, 62, 77, 79, 86, 92, 100 };
+				m_jpegQuality = jpegQualities[ encoding - PseudoEncodingJpegQualityLow ];
 			}
 		}
 		m_buffer.remove( 0, messageSize );
-		// le client vient d'annoncer le support du curseur : si une forme est
-		// deja connue, on la pousse tout de suite (sinon au prochain update hote)
-		if( m_supportsCursor && m_haveCursor )
-		{
-			sendCursorUpdate();
-		}
 		return true;
 	}
 
@@ -378,6 +387,9 @@ bool WebApiVncBridge::parseClientMessage()
 				y = qBound( 0, y, m_framebufferSize.height() - 1 );
 			}
 			vncConnection->mouseEvent( x, y, buttonMask );
+			// écho local : le curseur distant va se placer là où on l'envoie —
+			// on composite sans attendre le PointerPos de retour (réactivité)
+			onCursorPosChanged( x, y );
 		}
 		return true;
 	}
@@ -476,6 +488,17 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 		return;
 	}
 
+	// backpressure : si le client n'a pas fini de lire la trame précédente, on
+	// diffère (la région sale continue de s'accumuler). Empiler des trames dans
+	// le tampon d'envoi ne ferait qu'ajouter de la latence (bufferbloat) —
+	// mieux vaut envoyer moins de trames, plus fraîches. Le signal bytesWritten
+	// relance l'envoi dès que le tampon se vide.
+	constexpr qint64 MaxPendingWriteBytes = 512 * 1024;
+	if( m_socket->bytesToWrite() > MaxPendingWriteBytes )
+	{
+		return;
+	}
+
 	auto* vncConnection = m_controlInterface ? m_controlInterface->vncConnection() : nullptr;
 	if( vncConnection == nullptr )
 	{
@@ -546,19 +569,21 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 		return;		// nothing to send yet - keep the request pending
 	}
 
+	// une région très fragmentée coûte plus cher (en-têtes + JPEG par rect) que
+	// son rectangle englobant en un seul morceau
+	constexpr int MaxRectsPerUpdate = 12;
+	if( region.rectCount() > MaxRectsPerUpdate )
+	{
+		region = QRegion( region.boundingRect() );
+	}
+
 	for( const QRect& rect : region )
 	{
 		if( rect.isEmpty() )
 		{
 			continue;
 		}
-		appendUint16( rectsData, static_cast<quint16>( rect.x() ) );
-		appendUint16( rectsData, static_cast<quint16>( rect.y() ) );
-		appendUint16( rectsData, static_cast<quint16>( rect.width() ) );
-		appendUint16( rectsData, static_cast<quint16>( rect.height() ) );
-		appendUint32( rectsData, static_cast<quint32>( EncodingRaw ) );
-		rectsData += encodeRawRect( image, rect );
-		numRects++;
+		numRects = static_cast<quint16>( numRects + appendRect( rectsData, image, rect ) );
 	}
 
 	QByteArray message;
@@ -569,6 +594,12 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 
 	m_socket->sendBinaryMessage( message );
 
+	const QRect cursor = cursorRect();
+	if( region.intersects( cursor ) || ( cursor.isEmpty() == false && m_forceFullUpdate ) )
+	{
+		m_paintedCursorRect = cursor;
+	}
+
 	m_updatePending = false;
 	m_forceFullUpdate = false;
 	m_dirtyRegion = QRegion();
@@ -578,97 +609,154 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 
 void WebApiVncBridge::onCursorShapeUpdated( const QImage& cursorShape, int xh, int yh )
 {
+	markCursorDirty();
 	m_cursorShape = cursorShape;
 	m_cursorHotspot = QPoint( xh, yh );
 	m_haveCursor = true;
-	sendCursorUpdate();
+	markCursorDirty();
+	trySendFramebufferUpdate();
 }
 
 
 
-void WebApiVncBridge::sendCursorUpdate()
+void WebApiVncBridge::onCursorPosChanged( int x, int y )
 {
-	if( m_state != State::Running || m_supportsCursor == false || m_haveCursor == false ||
-		m_socket == nullptr || m_socket->state() != QAbstractSocket::ConnectedState )
+	const QPoint pos( x, y );
+	if( pos == m_cursorPos )
 	{
 		return;
 	}
-
-	// Cursor pseudo-encoding (-239) : forme + hotspot ; noVNC positionne ensuite le
-	// curseur sous le pointeur local (curseur cote client). Un curseur 0x0 le masque.
-	const QImage cursor = m_cursorShape.convertToFormat( QImage::Format_ARGB32 );
-	const int w = cursor.width();
-	const int h = cursor.height();
-
-	QByteArray rectsData;
-	appendUint16( rectsData, static_cast<quint16>( w > 0 ? qBound( 0, m_cursorHotspot.x(), w - 1 ) : 0 ) );	// x = hotspot X
-	appendUint16( rectsData, static_cast<quint16>( h > 0 ? qBound( 0, m_cursorHotspot.y(), h - 1 ) : 0 ) );	// y = hotspot Y
-	appendUint16( rectsData, static_cast<quint16>( w ) );
-	appendUint16( rectsData, static_cast<quint16>( h ) );
-	appendUint32( rectsData, static_cast<quint32>( PseudoEncodingCursor ) );
-	rectsData += encodeCursorRect( cursor );
-
-	QByteArray message;
-	message.append( static_cast<char>( 0 ) );	// message-type = FramebufferUpdate
-	message.append( static_cast<char>( 0 ) );	// padding
-	appendUint16( message, 1 );					// number-of-rectangles
-	message += rectsData;
-
-	m_socket->sendBinaryMessage( message );
+	markCursorDirty();
+	m_cursorPos = pos;
+	markCursorDirty();
+	trySendFramebufferUpdate();
 }
 
 
 
-QByteArray WebApiVncBridge::encodeCursorRect( const QImage& cursor ) const
+// zone couverte par le curseur composité (coin = position - hotspot)
+QRect WebApiVncBridge::cursorRect() const
 {
-	const int w = cursor.width();
-	const int h = cursor.height();
-	const int bytesPerPixel = qMax( 1, m_pixelFormat.bitsPerPixel / 8 );
-	const bool bigEndian = m_pixelFormat.bigEndian != 0;
+	if( m_haveCursor == false || m_cursorShape.isNull() || m_cursorPos.x() < 0 )
+	{
+		return {};
+	}
+	return { m_cursorPos - m_cursorHotspot, m_cursorShape.size() };
+}
+
+
+
+void WebApiVncBridge::markCursorDirty()
+{
+	const QRect rect = cursorRect();
+	if( rect.isValid() && rect.isEmpty() == false )
+	{
+		m_dirtyRegion += rect;
+	}
+	if( m_paintedCursorRect.isEmpty() == false )
+	{
+		m_dirtyRegion += m_paintedCursorRect;
+	}
+}
+
+
+
+// vrai si le format négocié par le client correspond octet pour octet au
+// framebuffer natif (QImage::Format_RGB32 little-endian) — c'est le format que
+// noVNC demande systématiquement
+bool WebApiVncBridge::clientFormatIsNative() const
+{
+	return m_pixelFormat.bitsPerPixel == 32 && m_pixelFormat.bigEndian == 0 &&
+		   m_pixelFormat.trueColour != 0 &&
+		   m_pixelFormat.redMax == 255 && m_pixelFormat.greenMax == 255 && m_pixelFormat.blueMax == 255 &&
+		   m_pixelFormat.redShift == 16 && m_pixelFormat.greenShift == 8 && m_pixelFormat.blueShift == 0;
+}
+
+
+
+// ajoute un ou plusieurs rects encodés (en-tête + données) à rectsData et
+// renvoie leur nombre ; choisit Tight JPEG pour les rects assez grands quand
+// le client le supporte, sinon Raw
+int WebApiVncBridge::appendRect( QByteArray& rectsData, const QImage& image, const QRect& rect )
+{
+	// en dessous de ce nombre de pixels, l'en-tête/DCT JPEG coûte plus que le Raw
+	constexpr int MinJpegPixels = 4096;
+	// la spec Tight limite la largeur d'un rect à 2048 px : découper au-delà
+	constexpr int MaxTightRectWidth = 2048;
+
+	if( m_supportsTight && rect.width() > MaxTightRectWidth )
+	{
+		const int half = rect.width() / 2;
+		return appendRect( rectsData, image, QRect( rect.x(), rect.y(), half, rect.height() ) ) +
+			   appendRect( rectsData, image, QRect( rect.x() + half, rect.y(), rect.width() - half, rect.height() ) );
+	}
+
+	// tuile de travail : copie du rect, avec le curseur distant composité à sa
+	// position réelle (la capture GDI ne l'inclut pas dans le framebuffer)
+	QImage tile = image.copy( rect );
+	const QRect cursor = cursorRect();
+	if( cursor.isEmpty() == false && cursor.intersects( rect ) )
+	{
+		QPainter painter( &tile );
+		painter.drawImage( cursor.topLeft() - rect.topLeft(), m_cursorShape );
+	}
+
+	if( m_supportsTight && m_pixelFormat.bitsPerPixel == 32 &&
+		static_cast<qint64>( rect.width() ) * rect.height() >= MinJpegPixels )
+	{
+		const QByteArray jpegData = encodeTightJpegRect( tile, tile.rect() );
+		if( jpegData.isEmpty() == false )
+		{
+			appendUint16( rectsData, static_cast<quint16>( rect.x() ) );
+			appendUint16( rectsData, static_cast<quint16>( rect.y() ) );
+			appendUint16( rectsData, static_cast<quint16>( rect.width() ) );
+			appendUint16( rectsData, static_cast<quint16>( rect.height() ) );
+			appendUint32( rectsData, static_cast<quint32>( EncodingTight ) );
+			rectsData += jpegData;
+			return 1;
+		}
+		// encodage JPEG indisponible (plugin d'image manquant ?) : repli Raw
+	}
+
+	appendUint16( rectsData, static_cast<quint16>( rect.x() ) );
+	appendUint16( rectsData, static_cast<quint16>( rect.y() ) );
+	appendUint16( rectsData, static_cast<quint16>( rect.width() ) );
+	appendUint16( rectsData, static_cast<quint16>( rect.height() ) );
+	appendUint32( rectsData, static_cast<quint32>( EncodingRaw ) );
+	rectsData += encodeRawRect( tile, tile.rect() );
+	return 1;
+}
+
+
+
+// rect Tight JPEG : octet de contrôle 0x90 (jpeg-compression), longueur
+// compacte (1-3 octets, 7 bits utiles par octet), données JPEG
+QByteArray WebApiVncBridge::encodeTightJpegRect( const QImage& image, const QRect& rect ) const
+{
+	QByteArray jpeg;
+	QBuffer buffer( &jpeg );
+	buffer.open( QIODevice::WriteOnly );
+	const QImage part = ( rect == image.rect() ) ? image : image.copy( rect );
+	if( part.save( &buffer, "JPG", m_jpegQuality ) == false || jpeg.isEmpty() )
+	{
+		return {};
+	}
 
 	QByteArray data;
+	data.append( static_cast<char>( 0x90 ) );	// compression-control : JPEG
 
-	// 1) donnees de pixels (format client), comme un rect Raw
-	for( int y = 0; y < h; ++y )
+	quint32 length = static_cast<quint32>( jpeg.size() );
+	data.append( static_cast<char>( ( length & 0x7F ) | ( length > 0x7F ? 0x80 : 0 ) ) );
+	if( length > 0x7F )
 	{
-		const auto* line = reinterpret_cast<const QRgb*>( cursor.constScanLine( y ) );
-		for( int x = 0; x < w; ++x )
+		data.append( static_cast<char>( ( ( length >> 7 ) & 0x7F ) | ( length > 0x3FFF ? 0x80 : 0 ) ) );
+		if( length > 0x3FFF )
 		{
-			const QRgb pixel = line[x];
-			const quint32 r = static_cast<quint32>( qRed( pixel ) ) * m_pixelFormat.redMax / 255;
-			const quint32 g = static_cast<quint32>( qGreen( pixel ) ) * m_pixelFormat.greenMax / 255;
-			const quint32 b = static_cast<quint32>( qBlue( pixel ) ) * m_pixelFormat.blueMax / 255;
-			const quint32 value = ( r << m_pixelFormat.redShift ) |
-								  ( g << m_pixelFormat.greenShift ) |
-								  ( b << m_pixelFormat.blueShift );
-			for( int byte = 0; byte < bytesPerPixel; ++byte )
-			{
-				const int shift = bigEndian ? ( bytesPerPixel - 1 - byte ) * 8 : byte * 8;
-				data.append( static_cast<char>( ( value >> shift ) & 0xFF ) );
-			}
+			data.append( static_cast<char>( ( length >> 14 ) & 0xFF ) );
 		}
 	}
 
-	// 2) bitmask 1-bpp (MSB d'abord), lignes alignees a l'octet : bit a 1 = pixel opaque
-	const int rowBytes = ( w + 7 ) / 8;
-	for( int y = 0; y < h; ++y )
-	{
-		const auto* line = reinterpret_cast<const QRgb*>( cursor.constScanLine( y ) );
-		for( int bx = 0; bx < rowBytes; ++bx )
-		{
-			quint8 maskByte = 0;
-			for( int bit = 0; bit < 8; ++bit )
-			{
-				const int x = bx * 8 + bit;
-				if( x < w && qAlpha( line[x] ) >= 128 )
-				{
-					maskByte |= static_cast<quint8>( 1 << ( 7 - bit ) );
-				}
-			}
-			data.append( static_cast<char>( maskByte ) );
-		}
-	}
-
+	data += jpeg;
 	return data;
 }
 
@@ -678,6 +766,22 @@ QByteArray WebApiVncBridge::encodeRawRect( const QImage& image, const QRect& rec
 {
 	const int bytesPerPixel = qMax( 1, m_pixelFormat.bitsPerPixel / 8 );
 	const bool bigEndian = m_pixelFormat.bigEndian != 0;
+
+	// chemin rapide : format client = format natif du framebuffer (cas noVNC) —
+	// copie de lignes brutes au lieu de la conversion pixel par pixel
+	if( clientFormatIsNative() )
+	{
+		QByteArray data;
+		const int rowBytes = rect.width() * 4;
+		data.resize( static_cast<qsizetype>( rowBytes ) * rect.height() );
+		auto* out = data.data();
+		for( int y = rect.top(); y <= rect.bottom(); ++y )
+		{
+			memcpy( out, image.constScanLine( y ) + static_cast<qsizetype>( rect.left() ) * 4, rowBytes );
+			out += rowBytes;
+		}
+		return data;
+	}
 
 	QByteArray data;
 	data.resize( static_cast<qsizetype>( rect.width() ) * rect.height() * bytesPerPixel );

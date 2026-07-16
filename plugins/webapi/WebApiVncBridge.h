@@ -104,7 +104,7 @@ private:
 	void onImageUpdated( int x, int y, int w, int h );
 	void onFramebufferUpdateComplete();
 	void onFramebufferSizeChanged( int w, int h );
-	void onCursorShapeUpdated( const QPixmap& cursorShape, int xh, int yh );
+	void onCursorShapeUpdated( const QImage& cursorShape, int xh, int yh );
 
 	void trySendFramebufferUpdate();
 	void sendCursorUpdate();		// pousse la forme du curseur (Cursor pseudo-encoding)
@@ -127,7 +127,7 @@ private:
 	bool m_supportsExtendedDesktopSize{false};
 	bool m_supportsCursor{false};		// client noVNC accepte le Cursor pseudo-encoding
 	bool m_haveCursor{false};			// une forme de curseur a déjà été reçue de l'hôte
-	QPixmap m_cursorShape{};
+	QImage m_cursorShape{};
 	QPoint m_cursorHotspot{};
 
 	bool m_updatePending{false};

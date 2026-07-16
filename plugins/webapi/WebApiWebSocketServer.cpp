@@ -23,6 +23,7 @@
  */
 
 #include <QHostAddress>
+#include <QTimer>
 #include <QUrlQuery>
 #include <QUuid>
 #include <QWebSocket>
@@ -103,6 +104,20 @@ void WebApiWebSocketServer::onNewConnection()
 
 		// the bridge takes ownership of the socket and deletes itself when the
 		// socket is disconnected
-		new WebApiVncBridge( socket, controlInterface, this );
+		auto* bridge = new WebApiVncBridge( socket, controlInterface, this );
+
+		// une session de pont active ne passe par aucun endpoint HTTP : rien ne
+		// ré-arme l'idle-timer de la connexion WebAPI (ConnectionIdleTimeout,
+		// 60 s par défaut), qui couperait la prise de main en pleine session.
+		// On le ré-arme donc périodiquement tant que le pont est vivant — le
+		// timer, enfant du pont, meurt avec lui.
+		auto* keepAliveTimer = new QTimer( bridge );
+		connect( keepAliveTimer, &QTimer::timeout, this, [this, uid]() {
+			if( m_controller )
+			{
+				m_controller->lookupConnectionByUid( uid );
+			}
+		} );
+		keepAliveTimer->start( ConnectionKeepAliveInterval );
 	}
 }

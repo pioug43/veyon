@@ -576,7 +576,7 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 
 
 
-void WebApiVncBridge::onCursorShapeUpdated( const QPixmap& cursorShape, int xh, int yh )
+void WebApiVncBridge::onCursorShapeUpdated( const QImage& cursorShape, int xh, int yh )
 {
 	m_cursorShape = cursorShape;
 	m_cursorHotspot = QPoint( xh, yh );
@@ -596,7 +596,7 @@ void WebApiVncBridge::sendCursorUpdate()
 
 	// Cursor pseudo-encoding (-239) : forme + hotspot ; noVNC positionne ensuite le
 	// curseur sous le pointeur local (curseur cote client). Un curseur 0x0 le masque.
-	const QImage cursor = m_cursorShape.toImage().convertToFormat( QImage::Format_ARGB32 );
+	const QImage cursor = m_cursorShape.convertToFormat( QImage::Format_ARGB32 );
 	const int w = cursor.width();
 	const int h = cursor.height();
 

@@ -103,11 +103,28 @@ void VncConnection::hookCursorShape( rfbClient* client, int xh, int yh, int w, i
 		return;
 	}
 
-	QImage alpha( client->rcMask, w, h, QImage::Format_Indexed8 );
-	alpha.setColorTable( { qRgb(255,255,255), qRgb(0,0,0) } );
+	// Ne pas créer de QPixmap/QBitmap ici : ce hook s'exécute dans le thread
+	// VncConnection, or ce sont des classes GUI non thread-safe — SIGSEGV dans
+	// QBitmap::fromImage() côté broker WebAPI (headless). De plus, QImage sans
+	// stride explicite suppose des lignes alignées sur 32 bits alors que
+	// rcSource/rcMask sont compacts. On construit donc une QImage ARGB32 pure
+	// (stride explicite, masque appliqué au canal alpha) ; la conversion en
+	// QPixmap/QCursor se fait chez les consommateurs, dans le thread GUI.
+	QImage cursorShape = QImage( client->rcSource, w, h, w * 4, QImage::Format_RGB32 )
+							 .convertToFormat( QImage::Format_ARGB32 );
 
-	QPixmap cursorShape( QPixmap::fromImage( QImage( client->rcSource, w, h, QImage::Format_RGB32 ) ) );
-	cursorShape.setMask( QBitmap::fromImage( alpha ) );
+	const auto* mask = client->rcMask;
+	for( int y = 0; y < h; ++y )
+	{
+		auto* line = reinterpret_cast<QRgb *>( cursorShape.scanLine( y ) );
+		for( int x = 0; x < w; ++x )
+		{
+			if( mask[y*w + x] == 0 )
+			{
+				line[x] = qRgba( 0, 0, 0, 0 );
+			}
+		}
+	}
 
 	auto connection = static_cast<VncConnection *>( clientData( client, VncConnectionTag ) );
 	if( connection )

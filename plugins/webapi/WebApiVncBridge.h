@@ -110,11 +110,10 @@ private:
 	void onFramebufferUpdateComplete();
 	void onFramebufferSizeChanged( int w, int h );
 	void onCursorShapeUpdated( const QImage& cursorShape, int xh, int yh );
-	void onCursorPosChanged( int x, int y );
 
 	void trySendFramebufferUpdate();
-	QRect cursorRect() const;		// zone du curseur composité dans le framebuffer
-	void markCursorDirty();			// invalide l'ancienne et la nouvelle zone du curseur
+	void sendCursorUpdate();		// pousse la forme du curseur (Cursor pseudo-encoding)
+	QByteArray encodeCursorRect( const QImage& cursor ) const;
 	QByteArray encodeRawRect( const QImage& image, const QRect& rect ) const;
 	int appendRect( QByteArray& rectsData, const QImage& image, const QRect& rect );
 	QByteArray encodeTightJpegRect( const QImage& image, const QRect& rect ) const;
@@ -136,11 +135,10 @@ private:
 	bool m_supportsExtendedDesktopSize{false};
 	bool m_supportsTight{false};		// client accepte l'encodage Tight (JPEG)
 	int m_jpegQuality{80};				// qualité JPEG issue du pseudo-encoding qualité du client
+	bool m_supportsCursor{false};		// client noVNC accepte le Cursor pseudo-encoding
 	bool m_haveCursor{false};			// une forme de curseur a déjà été reçue de l'hôte
 	QImage m_cursorShape{};
 	QPoint m_cursorHotspot{};
-	QPoint m_cursorPos{-1, -1};			// position hotspot du curseur distant (PointerPos amont + échos pointeur)
-	QRect m_paintedCursorRect{};		// zone où le curseur a été composité dans la dernière trame envoyée
 
 	bool m_updatePending{false};
 	bool m_forceFullUpdate{true};

@@ -25,7 +25,6 @@
 #include <QAbstractSocket>
 #include <QBuffer>
 #include <QImage>
-#include <QPainter>
 #include <QtEndian>
 #include <QWebSocket>
 
@@ -68,13 +67,11 @@ WebApiVncBridge::WebApiVncBridge( QWebSocket* socket, ComputerControlInterface::
 			 this, &WebApiVncBridge::onFramebufferSizeChanged, Qt::QueuedConnection );
 	connect( vncConnection, &VncConnection::cursorShapeUpdated,
 			 this, &WebApiVncBridge::onCursorShapeUpdated, Qt::QueuedConnection );
-	connect( vncConnection, &VncConnection::cursorPosChanged,
-			 this, &WebApiVncBridge::onCursorPosChanged, Qt::QueuedConnection );
 
-	// demander forme (RichCursor) et position (PointerPos) du curseur à l'hôte :
-	// le chemin de capture GDI n'inclut pas le curseur dans le framebuffer. On le
-	// COMPOSITE ensuite dans les trames sortantes à sa position distante réelle
-	// (cf. appendRect) — le client noVNC garde son point local comme repère.
+	// demander la forme du curseur à l'hôte (Cursor pseudo-encoding côté amont) :
+	// sinon le curseur n'est ni dans le framebuffer ni transmis, et noVNC n'affiche
+	// aucune souris. On la relaie au client noVNC qui la dessine localement, à sa
+	// vraie forme, sous le pointeur (cf. onCursorShapeUpdated / sendCursorUpdate).
 	// setUseRemoteCursor modifie l'état d'une connexion vivant dans SON thread ; on
 	// le planifie là-bas (comme setLiveUpdateMode) — les signaux sont déjà reçus en
 	// QueuedConnection, un appel direct ici serait une data race.
@@ -315,6 +312,10 @@ bool WebApiVncBridge::parseClientMessage()
 			{
 				m_supportsExtendedDesktopSize = true;
 			}
+			else if( encoding == PseudoEncodingCursor )
+			{
+				m_supportsCursor = true;
+			}
 			else if( encoding == EncodingTight )
 			{
 				m_supportsTight = true;
@@ -328,6 +329,12 @@ bool WebApiVncBridge::parseClientMessage()
 			}
 		}
 		m_buffer.remove( 0, messageSize );
+		// le client vient d'annoncer le support du curseur : si une forme est
+		// déjà connue, on la pousse tout de suite (sinon au prochain update hôte)
+		if( m_supportsCursor && m_haveCursor )
+		{
+			sendCursorUpdate();
+		}
 		return true;
 	}
 
@@ -387,9 +394,6 @@ bool WebApiVncBridge::parseClientMessage()
 				y = qBound( 0, y, m_framebufferSize.height() - 1 );
 			}
 			vncConnection->mouseEvent( x, y, buttonMask );
-			// écho local : le curseur distant va se placer là où on l'envoie —
-			// on composite sans attendre le PointerPos de retour (réactivité)
-			onCursorPosChanged( x, y );
 		}
 		return true;
 	}
@@ -594,12 +598,6 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 
 	m_socket->sendBinaryMessage( message );
 
-	const QRect cursor = cursorRect();
-	if( region.intersects( cursor ) || ( cursor.isEmpty() == false && m_forceFullUpdate ) )
-	{
-		m_paintedCursorRect = cursor;
-	}
-
 	m_updatePending = false;
 	m_forceFullUpdate = false;
 	m_dirtyRegion = QRegion();
@@ -609,54 +607,101 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 
 void WebApiVncBridge::onCursorShapeUpdated( const QImage& cursorShape, int xh, int yh )
 {
-	markCursorDirty();
 	m_cursorShape = cursorShape;
 	m_cursorHotspot = QPoint( xh, yh );
 	m_haveCursor = true;
-	markCursorDirty();
-	trySendFramebufferUpdate();
+	// pousser la nouvelle forme au client : noVNC la dessine localement (curseur
+	// côté client) sous le pointeur, à sa vraie forme. Les changements de forme
+	// (flèche → I-beam → main…) arrivent au fil de l'eau grâce au poll Live.
+	sendCursorUpdate();
 }
 
 
 
-void WebApiVncBridge::onCursorPosChanged( int x, int y )
+void WebApiVncBridge::sendCursorUpdate()
 {
-	const QPoint pos( x, y );
-	if( pos == m_cursorPos )
+	if( m_state != State::Running || m_supportsCursor == false || m_haveCursor == false ||
+		m_socket == nullptr || m_socket->state() != QAbstractSocket::ConnectedState )
 	{
 		return;
 	}
-	markCursorDirty();
-	m_cursorPos = pos;
-	markCursorDirty();
-	trySendFramebufferUpdate();
+
+	// Cursor pseudo-encoding (-239) : forme + hotspot ; noVNC positionne ensuite le
+	// curseur sous le pointeur local (curseur côté client). Un curseur 0x0 le masque.
+	const QImage cursor = m_cursorShape.convertToFormat( QImage::Format_ARGB32 );
+	const int w = cursor.width();
+	const int h = cursor.height();
+
+	QByteArray rectsData;
+	appendUint16( rectsData, static_cast<quint16>( w > 0 ? qBound( 0, m_cursorHotspot.x(), w - 1 ) : 0 ) );	// x = hotspot X
+	appendUint16( rectsData, static_cast<quint16>( h > 0 ? qBound( 0, m_cursorHotspot.y(), h - 1 ) : 0 ) );	// y = hotspot Y
+	appendUint16( rectsData, static_cast<quint16>( w ) );
+	appendUint16( rectsData, static_cast<quint16>( h ) );
+	appendUint32( rectsData, static_cast<quint32>( PseudoEncodingCursor ) );
+	rectsData += encodeCursorRect( cursor );
+
+	QByteArray message;
+	message.append( static_cast<char>( 0 ) );	// message-type = FramebufferUpdate
+	message.append( static_cast<char>( 0 ) );	// padding
+	appendUint16( message, 1 );					// number-of-rectangles
+	message += rectsData;
+
+	m_socket->sendBinaryMessage( message );
 }
 
 
 
-// zone couverte par le curseur composité (coin = position - hotspot)
-QRect WebApiVncBridge::cursorRect() const
+QByteArray WebApiVncBridge::encodeCursorRect( const QImage& cursor ) const
 {
-	if( m_haveCursor == false || m_cursorShape.isNull() || m_cursorPos.x() < 0 )
-	{
-		return {};
-	}
-	return { m_cursorPos - m_cursorHotspot, m_cursorShape.size() };
-}
+	const int w = cursor.width();
+	const int h = cursor.height();
+	const int bytesPerPixel = qMax( 1, m_pixelFormat.bitsPerPixel / 8 );
+	const bool bigEndian = m_pixelFormat.bigEndian != 0;
 
+	QByteArray data;
 
+	// 1) données de pixels (format client), comme un rect Raw
+	for( int y = 0; y < h; ++y )
+	{
+		const auto* line = reinterpret_cast<const QRgb*>( cursor.constScanLine( y ) );
+		for( int x = 0; x < w; ++x )
+		{
+			const QRgb pixel = line[x];
+			const quint32 r = static_cast<quint32>( qRed( pixel ) ) * m_pixelFormat.redMax / 255;
+			const quint32 g = static_cast<quint32>( qGreen( pixel ) ) * m_pixelFormat.greenMax / 255;
+			const quint32 b = static_cast<quint32>( qBlue( pixel ) ) * m_pixelFormat.blueMax / 255;
+			const quint32 value = ( r << m_pixelFormat.redShift ) |
+								  ( g << m_pixelFormat.greenShift ) |
+								  ( b << m_pixelFormat.blueShift );
+			for( int byte = 0; byte < bytesPerPixel; ++byte )
+			{
+				const int shift = bigEndian ? ( bytesPerPixel - 1 - byte ) * 8 : byte * 8;
+				data.append( static_cast<char>( ( value >> shift ) & 0xFF ) );
+			}
+		}
+	}
 
-void WebApiVncBridge::markCursorDirty()
-{
-	const QRect rect = cursorRect();
-	if( rect.isValid() && rect.isEmpty() == false )
+	// 2) bitmask 1-bpp (MSB d'abord), lignes alignées à l'octet : bit à 1 = pixel opaque
+	const int rowBytes = ( w + 7 ) / 8;
+	for( int y = 0; y < h; ++y )
 	{
-		m_dirtyRegion += rect;
+		const auto* line = reinterpret_cast<const QRgb*>( cursor.constScanLine( y ) );
+		for( int bx = 0; bx < rowBytes; ++bx )
+		{
+			quint8 maskByte = 0;
+			for( int bit = 0; bit < 8; ++bit )
+			{
+				const int x = bx * 8 + bit;
+				if( x < w && qAlpha( line[x] ) >= 128 )
+				{
+					maskByte |= static_cast<quint8>( 1 << ( 7 - bit ) );
+				}
+			}
+			data.append( static_cast<char>( maskByte ) );
+		}
 	}
-	if( m_paintedCursorRect.isEmpty() == false )
-	{
-		m_dirtyRegion += m_paintedCursorRect;
-	}
+
+	return data;
 }
 
 
@@ -691,20 +736,10 @@ int WebApiVncBridge::appendRect( QByteArray& rectsData, const QImage& image, con
 			   appendRect( rectsData, image, QRect( rect.x() + half, rect.y(), rect.width() - half, rect.height() ) );
 	}
 
-	// tuile de travail : copie du rect, avec le curseur distant composité à sa
-	// position réelle (la capture GDI ne l'inclut pas dans le framebuffer)
-	QImage tile = image.copy( rect );
-	const QRect cursor = cursorRect();
-	if( cursor.isEmpty() == false && cursor.intersects( rect ) )
-	{
-		QPainter painter( &tile );
-		painter.drawImage( cursor.topLeft() - rect.topLeft(), m_cursorShape );
-	}
-
 	if( m_supportsTight && m_pixelFormat.bitsPerPixel == 32 &&
 		static_cast<qint64>( rect.width() ) * rect.height() >= MinJpegPixels )
 	{
-		const QByteArray jpegData = encodeTightJpegRect( tile, tile.rect() );
+		const QByteArray jpegData = encodeTightJpegRect( image, rect );
 		if( jpegData.isEmpty() == false )
 		{
 			appendUint16( rectsData, static_cast<quint16>( rect.x() ) );
@@ -723,7 +758,7 @@ int WebApiVncBridge::appendRect( QByteArray& rectsData, const QImage& image, con
 	appendUint16( rectsData, static_cast<quint16>( rect.width() ) );
 	appendUint16( rectsData, static_cast<quint16>( rect.height() ) );
 	appendUint32( rectsData, static_cast<quint32>( EncodingRaw ) );
-	rectsData += encodeRawRect( tile, tile.rect() );
+	rectsData += encodeRawRect( image, rect );
 	return 1;
 }
 

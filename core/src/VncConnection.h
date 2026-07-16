@@ -256,6 +256,9 @@ private:
 	QAtomicInt m_framebufferUpdateInterval;
 	QElapsedTimer m_fullFramebufferUpdateTimer{};
 	QElapsedTimer m_incrementalFramebufferUpdateTimer{};
+	// mode Live : une requête incrémentale est en attente de réponse (le serveur
+	// la garde jusqu'au prochain changement d'écran, puis pousse la mise à jour)
+	bool m_liveIncrementalPending{false};
 
 	// queue for RFB and custom events
 	QQueue<VncEvent *> m_eventQueue;

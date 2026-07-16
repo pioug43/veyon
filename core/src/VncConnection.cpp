@@ -509,6 +509,7 @@ void VncConnection::establishConnection()
 	setControlFlag( ControlFlag::RestartConnection, false );
 
 	m_framebufferState = FramebufferState::Invalid;
+	m_liveIncrementalPending = false;	// nouvelle connexion : aucune requête en vol
 
 	while( isControlFlagSet( ControlFlag::TerminateThread ) == false &&
 		   state() != State::Connected ) // try to connect as long as the server allows
@@ -665,6 +666,7 @@ void VncConnection::handleConnection()
 		{
 			requestFrameufferUpdate(FramebufferUpdateType::Full);
 			m_fullFramebufferUpdateTimer.restart();
+			m_liveIncrementalPending = true;	// le full satisfait la requête en cours
 		}
 		else if (m_framebufferUpdateInterval > 0 &&
 				 m_incrementalFramebufferUpdateTimer.elapsed() > incrementalFramebufferUpdateTimeout())
@@ -676,6 +678,22 @@ void VncConnection::handleConnection()
 		{
 			setControlFlag(ControlFlag::TriggerFramebufferUpdate, false);
 			requestFrameufferUpdate(FramebufferUpdateType::Incremental);
+			m_liveIncrementalPending = true;
+		}
+
+		// Mode Live (intervalle <= 0) : garder EXACTEMENT une requête incrémentale
+		// en vol. Le serveur la conserve jusqu'au prochain changement d'écran puis
+		// pousse la mise à jour ; on la ré-émet dès la trame reçue (le drapeau est
+		// remis à zéro dans finishFrameBufferUpdate). Sans cela, aucune requête
+		// n'est en attente entre deux full repaints → l'écran ne se rafraîchissait
+		// que toutes les FramebufferUpdateTimeout millisecondes (défaut 3 s).
+		if (m_framebufferUpdateInterval <= 0 &&
+			isControlFlagSet(ControlFlag::SkipFramebufferUpdates) == false &&
+			m_framebufferState == FramebufferState::Valid &&
+			m_liveIncrementalPending == false)
+		{
+			requestFrameufferUpdate(FramebufferUpdateType::Incremental);
+			m_liveIncrementalPending = true;
 		}
 
 		const auto remainingUpdateInterval = m_framebufferUpdateInterval - loopTimer.elapsed();
@@ -806,6 +824,7 @@ void VncConnection::finishFrameBufferUpdate()
 {
 	m_incrementalFramebufferUpdateTimer.restart();
 	m_fullFramebufferUpdateTimer.restart();
+	m_liveIncrementalPending = false;	// réponse reçue : on pourra ré-armer une requête Live
 
 	m_framebufferState = FramebufferState::Valid;
 	setControlFlag( ControlFlag::ScaledFramebufferNeedsUpdate, true );

@@ -26,30 +26,36 @@
 
 #include <QString>
 
-// Contrôles du client VDI Omnissa Horizon (ex-VMware Horizon) sur le poste
-// physique. Windows : Win32 (user32/wtsapi32). Linux : X11/EWMH + notify-send.
-// Le processus client est identifié par son exécutable (vmware-view / omnissa /
-// horizon+client), robuste au renommage VMware→Omnissa et aux versions.
+// Contrôles du client VDI Omnissa Horizon (ex-VMware Horizon).
+// Windows : le client tourne sur le POSTE PHYSIQUE, hors de la VM — on compare
+// donc, via le registre publié par l'agent Horizon (lisible en SYSTEM), les écrans
+// PHYSIQUES du poste (ViewClient_Displays.Topology) à ce que la session distante
+// affiche RÉELLEMENT (Blast\Telemetry\ViewClient_Current_Topology, repli
+// EnumDisplayMonitors) ; couverture partielle = hôte accessible = NotFullscreen.
+// Linux : X11/EWMH + notify-send (verdict seulement si Veyon tourne sur le poste
+// hébergeant le client ; voir la note dans le .cpp).
 namespace ExamModeVdiClient
 {
 
 enum class State
 {
-	Unknown,		// non concluant : aucune fenêtre client visible (client absent,
-					// minimisé/fermé, ou pas d'accès à la session graphique — p.ex.
-					// exécution en SYSTEM/root sans DISPLAY). À NE PAS traiter comme
-					// une violation (évite les faux positifs).
-	Fullscreen,		// une fenêtre du client couvre tout l'écran (hôte masqué)
-	NotFullscreen,	// le client est visible mais fenêtré/maximisé (hôte accessible)
+	Unknown,		// non concluant : topologie du client VDI illisible (poste
+					// physique/console, hors session Horizon, ou données agent
+					// absentes). À NE PAS traiter comme une violation (évite les
+					// faux positifs).
+	Fullscreen,		// la session distante couvre tout le matériel physique du poste
+					// (tous les écrans) → l'hôte physique est masqué
+	NotFullscreen,	// la session distante ne couvre qu'une partie des écrans du poste
+					// (client fenêtré, ou plein écran sur un seul écran) → hôte accessible
 };
 
 // Le client VDI occupe-t-il tout un écran ?
 State fullscreenState();
 
-// Tente (best-effort) de forcer le client en plein écran. Windows : étend la
-// fenêtre pour couvrir le moniteur. Linux : requête EWMH _NET_WM_STATE_FULLSCREEN
-// au gestionnaire de fenêtres. Renvoie true si l'état plein écran est constaté
-// après l'opération.
+// Tente (best-effort) de forcer le client en plein écran. Windows : impossible
+// depuis l'invité (le client est sur le poste physique) → simple constat de l'état.
+// Linux : requête EWMH _NET_WM_STATE_FULLSCREEN au WM (si Veyon tourne sur le poste
+// du client). Renvoie true si l'état plein écran est constaté après l'opération.
 bool forceFullscreen();
 
 // Affiche un message NON bloquant dans la session graphique de l'étudiant, avec

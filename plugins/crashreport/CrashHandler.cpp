@@ -32,6 +32,9 @@
 #include <QJsonObject>
 #include <QSysInfo>
 
+#include <atomic>
+#include <exception>
+
 #include "CrashHandler.h"
 #include "HostAddress.h"
 #include "VeyonCore.h"
@@ -39,6 +42,8 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <dbghelp.h>
+#include <csignal>
+#include <cstdlib>
 #else
 #include <csignal>
 #include <cstring>
@@ -68,6 +73,10 @@ struct Context
 };
 
 Context g_ctx;
+
+// Garde anti-réentrance : un crash DANS le gestionnaire (tas corrompu…) ne
+// doit pas boucler — au 2e passage on rétablit le comportement par défaut.
+std::atomic_flag g_handling = ATOMIC_FLAG_INIT;
 
 constexpr int LogTailMaxBytes = 64 * 1024;
 constexpr int BackTraceMaxDepth = 64;
@@ -151,8 +160,32 @@ void writeReport( const QString& basePath, const QString& reason, const QString&
 
 // Filtre d'exception de dernier recours : écrit un minidump complet puis les
 // métadonnées, et termine le processus proprement.
+// Nom du module (exe/DLL) contenant une adresse — triage immédiat du fautif.
+QString moduleNameFor( const void* address )
+{
+	HMODULE module = nullptr;
+	if( GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+							GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+							reinterpret_cast<LPCWSTR>( address ), &module ) == false || module == nullptr )
+	{
+		return {};
+	}
+	wchar_t path[MAX_PATH];
+	const auto len = GetModuleFileNameW( module, path, MAX_PATH );
+	if( len == 0 )
+	{
+		return {};
+	}
+	return QFileInfo( QString::fromWCharArray( path, int(len) ) ).fileName();
+}
+
 LONG WINAPI topLevelExceptionFilter( EXCEPTION_POINTERS* info )
 {
+	if( g_handling.test_and_set() )
+	{
+		return EXCEPTION_EXECUTE_HANDLER;
+	}
+
 	const auto base = reportBasePath();
 
 	QString dumpFileName;
@@ -179,12 +212,17 @@ LONG WINAPI topLevelExceptionFilter( EXCEPTION_POINTERS* info )
 	}
 
 	const auto* record = info->ExceptionRecord;
-	const QString details =
+	QString details =
 		QStringLiteral("exceptionCode=0x%1 faultAddress=0x%2 threadId=%3 flags=0x%4")
 			.arg( static_cast<quint32>( record->ExceptionCode ), 8, 16, QLatin1Char('0') )
 			.arg( reinterpret_cast<quintptr>( record->ExceptionAddress ), 0, 16 )
 			.arg( GetCurrentThreadId() )
 			.arg( static_cast<quint32>( record->ExceptionFlags ), 0, 16 );
+	const auto module = moduleNameFor( record->ExceptionAddress );
+	if( module.isEmpty() == false )
+	{
+		details += QStringLiteral(" module=%1").arg( module );
+	}
 
 	writeReport( base, QStringLiteral("unhandled-exception"), details, {}, dumpFileName );
 
@@ -192,6 +230,33 @@ LONG WINAPI topLevelExceptionFilter( EXCEPTION_POINTERS* info )
 	// termine (pas de dialogue WER, notre dump est déjà écrit).
 	return EXCEPTION_EXECUTE_HANDLER;
 }
+
+// abort(), std::terminate() et les appels virtuels purs ne passent PAS par le
+// filtre SEH (le chemin fatal Veyon « Aborting due to severe error » finit en
+// abort()). On les convertit en exception structurée pour produire dump+rapport.
+[[noreturn]] void raiseFromFatalPath( DWORD code )
+{
+	RaiseException( code, EXCEPTION_NONCONTINUABLE, 0, nullptr );
+	TerminateProcess( GetCurrentProcess(), 3 );
+	for(;;) {} // [[noreturn]] : jamais atteint
+}
+
+void abortSignalHandler( int )
+{
+	raiseFromFatalPath( 0xE000DEAD );
+}
+
+[[noreturn]] void terminateHandler()
+{
+	raiseFromFatalPath( 0xE000DEAE );
+}
+
+#ifdef _MSC_VER
+void purecallHandler()
+{
+	raiseFromFatalPath( 0xE000DEAF );
+}
+#endif
 
 #else
 
@@ -202,6 +267,13 @@ struct sigaction g_oldActions[NSIG];
 void signalHandler( int sig, siginfo_t* siginfo, void* ucontext )
 {
 	Q_UNUSED(ucontext)
+
+	if( g_handling.test_and_set() )
+	{
+		::signal( sig, SIG_DFL );
+		::raise( sig );
+		return;
+	}
 
 	const auto base = reportBasePath();
 
@@ -292,6 +364,13 @@ void CrashHandler::install( const QString& spoolDir, const QString& componentNam
 
 #ifdef Q_OS_WIN
 	SetUnhandledExceptionFilter( topLevelExceptionFilter );
+	::signal( SIGABRT, abortSignalHandler );
+	std::set_terminate( terminateHandler );
+#ifdef _MSC_VER
+	// CRT MSVC uniquement (build MinGW/MXE : non exportés par msvcrt.dll)
+	_set_abort_behavior( 0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT );
+	_set_purecall_handler( purecallHandler );
+#endif
 #else
 	struct sigaction sa;
 	memset( &sa, 0, sizeof( sa ) );

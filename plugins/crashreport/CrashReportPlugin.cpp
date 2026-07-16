@@ -81,17 +81,31 @@ void CrashReportPlugin::pruneOldReports( const QString& spoolDir, int keep )
 {
 	// Tous les fichiers d'un même rapport partagent la base « crash-* » ; on
 	// trie par date (plus récents d'abord) et on supprime au-delà de `keep`
-	// rapports .json, en emportant les fichiers frères (.dmp/.trace).
+	// rapports .json OU du budget disque (les minidumps « WithDataSegs »
+	// peuvent peser des dizaines de Mo), en emportant les frères (.dmp/.trace).
 	QDir dir( spoolDir );
 	const auto reports = dir.entryInfoList( { QStringLiteral("crash-*.json") }, QDir::Files, QDir::Time );
 
-	for( int i = keep; i < reports.size(); ++i )
+	qint64 usedBytes = 0;
+	for( int i = 0; i < reports.size(); ++i )
 	{
 		const auto base = reports.at( i ).completeBaseName();
 		const auto siblings = dir.entryInfoList( { base + QStringLiteral(".*") }, QDir::Files );
+
+		qint64 reportBytes = 0;
 		for( const auto& sibling : siblings )
 		{
-			QFile::remove( sibling.absoluteFilePath() );
+			reportBytes += sibling.size();
 		}
+
+		if( i >= keep || usedBytes + reportBytes > MaxSpoolBytes )
+		{
+			for( const auto& sibling : siblings )
+			{
+				QFile::remove( sibling.absoluteFilePath() );
+			}
+			continue;
+		}
+		usedBytes += reportBytes;
 	}
 }

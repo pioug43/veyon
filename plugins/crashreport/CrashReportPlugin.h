@@ -75,4 +75,8 @@ private:
 
 	static constexpr int MaxRetainedReports = 25;
 
+	// Budget disque total du spool (dumps compris) — le plus contraignant
+	// de la limite en nombre et en octets s'applique.
+	static constexpr qint64 MaxSpoolBytes = 512 * 1024 * 1024;
+
 };

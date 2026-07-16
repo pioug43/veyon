@@ -241,6 +241,7 @@ private:
 	QTimer* m_timer{nullptr};
 	QTimer* m_watchdog{nullptr};	// lève tout si le portail cesse de ré-appliquer (fail-safe)
 	QTimer* m_driftTimer{nullptr};
+	QTimer* m_fullscreenTimer{nullptr};	// contrôle plein écran VDI rapide (2 s)
 	ExamModeLinuxExecGuard* m_execGuard{nullptr};	// prévention de lancement Linux (fanotify)
 	bool m_active{false};
 	QStringList m_blockedApps{};

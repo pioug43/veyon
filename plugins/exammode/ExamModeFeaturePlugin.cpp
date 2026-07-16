@@ -1024,6 +1024,7 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		return false;
 	}
 
+	const bool renewal = m_active;		// re-push du portail (renouvellement de bail)
 	m_active = true;
 
 	if( m_timer == nullptr )
@@ -1063,12 +1064,33 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			{
 				setStatus( QStringLiteral("DEGRADED"), QStringLiteral("ENFORCEMENT_DRIFT"),
 					QStringLiteral("A mandatory backend drifted from the applied policy") );
+			}
+		} );
+	}
+	m_driftTimer->start( 10000 );
+
+	// Contrôle plein écran du client VDI Omnissa Horizon, dans son PROPRE timer
+	// rapide : hors plein écran, l'étudiant peut atteindre l'hôte physique → on
+	// remonte une erreur au plus vite. La vérification est une simple lecture du
+	// registre de l'agent Horizon (quasi gratuite), contrairement à
+	// verifyEnforcement() qui reste sur le driftTimer à 10 s.
+	// Unknown (client non visible / hors session interactive) = non concluant,
+	// donc PAS une violation (évite les faux positifs).
+	if( m_fullscreenTimer == nullptr )
+	{
+		m_fullscreenTimer = new QTimer( this );
+		connect( m_fullscreenTimer, &QTimer::timeout, this, [this]() {
+			if( m_active == false )
+			{
 				return;
 			}
-			// Contrôle plein écran du client VDI Omnissa Horizon : hors plein écran,
-			// l'étudiant peut atteindre l'hôte physique → on remonte une erreur.
-			// Unknown (client non visible / hors session interactive) = non concluant,
-			// donc PAS une violation (évite les faux positifs).
+			// Ne pas masquer une dérive d'enforcement en cours : le plein écran ne
+			// touche au statut que si la dégradation est due au plein écran.
+			if( m_status == QStringLiteral("DEGRADED") &&
+				m_errorCode != QStringLiteral("VDI_CLIENT_NOT_FULLSCREEN") )
+			{
+				return;
+			}
 			const auto vdiState = ExamModeVdiClient::fullscreenState();
 			if( vdiState == ExamModeVdiClient::State::NotFullscreen )
 			{
@@ -1093,7 +1115,7 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			}
 		} );
 	}
-	m_driftTimer->start( 10000 );
+	m_fullscreenTimer->start( 2000 );
 
 	enforceTick();		// passe immédiate sur les processus interdits
 	QVariantMap results{
@@ -1108,20 +1130,26 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		m_capabilities.insert( it.key(), it.value() );
 	}
 
-	// Client VDI plein écran à l'activation : on tente de forcer ; si impossible,
-	// on accorde FullscreenGraceSeconds avant que le driftTimer ne remonte la
-	// violation. AUCUN message natif ici : toutes les notifications à l'étudiant
-	// passent par le canal UNIQUE Veyon TextMessage, piloté par le portail
-	// (cohérence : le portail détecte VDI_CLIENT_NOT_FULLSCREEN via examStatus et
-	// envoie lui-même le message « passez en plein écran »).
-	m_fullscreenGraceUntilMs = 0;
-	if( ExamModeVdiClient::fullscreenState() == ExamModeVdiClient::State::NotFullscreen )
+	// Client VDI plein écran à l'ACTIVATION uniquement : on tente de forcer ; si
+	// impossible, on accorde FullscreenGraceSeconds avant que le timer plein
+	// écran ne remonte la violation. Sur un simple RENOUVELLEMENT de bail
+	// (re-push périodique du portail), on ne ré-arme JAMAIS la grâce : sinon un
+	// poste fenêtré resterait perpétuellement en grâce et la violation ne
+	// serait jamais signalée. AUCUN message natif ici : toutes les notifications
+	// à l'étudiant passent par le canal UNIQUE Veyon TextMessage, piloté par le
+	// portail (cohérence : le portail détecte VDI_CLIENT_NOT_FULLSCREEN via
+	// examStatus et envoie lui-même le message « passez en plein écran »).
+	if( renewal == false )
 	{
-		ExamModeVdiClient::forceFullscreen();
-		if( ExamModeVdiClient::fullscreenState() != ExamModeVdiClient::State::Fullscreen )
+		m_fullscreenGraceUntilMs = 0;
+		if( ExamModeVdiClient::fullscreenState() == ExamModeVdiClient::State::NotFullscreen )
 		{
-			m_fullscreenGraceUntilMs = QDateTime::currentMSecsSinceEpoch() +
-				static_cast<qint64>( FullscreenGraceSeconds ) * 1000;
+			ExamModeVdiClient::forceFullscreen();
+			if( ExamModeVdiClient::fullscreenState() != ExamModeVdiClient::State::Fullscreen )
+			{
+				m_fullscreenGraceUntilMs = QDateTime::currentMSecsSinceEpoch() +
+					static_cast<qint64>( FullscreenGraceSeconds ) * 1000;
+			}
 		}
 	}
 
@@ -1153,6 +1181,10 @@ void ExamModeFeaturePlugin::stopEnforcement()
 	if( m_driftTimer )
 	{
 		m_driftTimer->stop();
+	}
+	if( m_fullscreenTimer )
+	{
+		m_fullscreenTimer->stop();
 	}
 	removeLaunchPrevention();
 	removeSiteFiltering();

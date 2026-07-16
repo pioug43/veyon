@@ -509,7 +509,6 @@ void VncConnection::establishConnection()
 	setControlFlag( ControlFlag::RestartConnection, false );
 
 	m_framebufferState = FramebufferState::Invalid;
-	m_liveIncrementalPending = false;	// nouvelle connexion : aucune requête en vol
 
 	while( isControlFlagSet( ControlFlag::TerminateThread ) == false &&
 		   state() != State::Connected ) // try to connect as long as the server allows
@@ -638,10 +637,14 @@ void VncConnection::handleConnection()
 	{
 		loopTimer.start();
 
+		// Mode Live (intervalle <= 0) : réveiller la boucle au rythme du poll
+		// rapide, sinon WaitForMessage dormirait m_messageWaitTimeout (500 ms) et
+		// brideraient la cadence des requêtes incrémentales à ~2/s.
 		const auto waitTimeout = isControlFlagSet(ControlFlag::SkipFramebufferUpdates) ?
 									 m_messageWaitTimeout / 10
 								   :
-									 (m_framebufferUpdateInterval > 0 ? m_messageWaitTimeout * 100 : m_messageWaitTimeout);
+									 (m_framebufferUpdateInterval > 0 ? m_messageWaitTimeout * 100 :
+									  qMax(1, m_fastFramebufferUpdateInterval));
 
 		const int i = WaitForMessage(m_client, waitTimeout);
 
@@ -666,10 +669,24 @@ void VncConnection::handleConnection()
 		{
 			requestFrameufferUpdate(FramebufferUpdateType::Full);
 			m_fullFramebufferUpdateTimer.restart();
-			m_liveIncrementalPending = true;	// le full satisfait la requête en cours
+			m_incrementalFramebufferUpdateTimer.restart();
 		}
 		else if (m_framebufferUpdateInterval > 0 &&
 				 m_incrementalFramebufferUpdateTimer.elapsed() > incrementalFramebufferUpdateTimeout())
+		{
+			requestFrameufferUpdate(FramebufferUpdateType::Incremental);
+			m_incrementalFramebufferUpdateTimer.restart();
+		}
+		// Mode Live (intervalle <= 0) : POLL incrémental à cadence rapide
+		// (m_fastFramebufferUpdateInterval, défaut 100 ms). Le serveur du poste ne
+		// « réveille » pas une requête incrémentale maintenue au fil des
+		// changements — il ne répond qu'aux requêtes fraîches. On interroge donc
+		// périodiquement pour récupérer les diffs ; sans cela l'écran ne se
+		// rafraîchissait qu'au full repaint (FramebufferUpdateTimeout).
+		else if (m_framebufferUpdateInterval <= 0 &&
+				 isControlFlagSet(ControlFlag::SkipFramebufferUpdates) == false &&
+				 m_framebufferState == FramebufferState::Valid &&
+				 m_incrementalFramebufferUpdateTimer.elapsed() >= m_fastFramebufferUpdateInterval)
 		{
 			requestFrameufferUpdate(FramebufferUpdateType::Incremental);
 			m_incrementalFramebufferUpdateTimer.restart();
@@ -678,22 +695,7 @@ void VncConnection::handleConnection()
 		{
 			setControlFlag(ControlFlag::TriggerFramebufferUpdate, false);
 			requestFrameufferUpdate(FramebufferUpdateType::Incremental);
-			m_liveIncrementalPending = true;
-		}
-
-		// Mode Live (intervalle <= 0) : garder EXACTEMENT une requête incrémentale
-		// en vol. Le serveur la conserve jusqu'au prochain changement d'écran puis
-		// pousse la mise à jour ; on la ré-émet dès la trame reçue (le drapeau est
-		// remis à zéro dans finishFrameBufferUpdate). Sans cela, aucune requête
-		// n'est en attente entre deux full repaints → l'écran ne se rafraîchissait
-		// que toutes les FramebufferUpdateTimeout millisecondes (défaut 3 s).
-		if (m_framebufferUpdateInterval <= 0 &&
-			isControlFlagSet(ControlFlag::SkipFramebufferUpdates) == false &&
-			m_framebufferState == FramebufferState::Valid &&
-			m_liveIncrementalPending == false)
-		{
-			requestFrameufferUpdate(FramebufferUpdateType::Incremental);
-			m_liveIncrementalPending = true;
+			m_incrementalFramebufferUpdateTimer.restart();
 		}
 
 		const auto remainingUpdateInterval = m_framebufferUpdateInterval - loopTimer.elapsed();
@@ -824,7 +826,6 @@ void VncConnection::finishFrameBufferUpdate()
 {
 	m_incrementalFramebufferUpdateTimer.restart();
 	m_fullFramebufferUpdateTimer.restart();
-	m_liveIncrementalPending = false;	// réponse reçue : on pourra ré-armer une requête Live
 
 	m_framebufferState = FramebufferState::Valid;
 	setControlFlag( ControlFlag::ScaledFramebufferNeedsUpdate, true );

@@ -228,7 +228,10 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 		const auto requiredCapabilities = arguments.value( argToString( Argument::RequiredCapabilities ) ).toStringList();
 		const auto externalCapabilities = arguments.value( argToString( Argument::ExternalCapabilities ) ).toMap();
 		const auto signingKeyId = arguments.value( argToString( Argument::SigningKeyId ) ).toString();
-		const auto profileSignature = arguments.value( argToString( Argument::ProfileSignature ) );
+		// TOUJOURS convertir vers un type concret : un QVariant invalide (clé
+		// absente) sérialisé dans le FeatureMessage fait rejeter la map entière
+		// par VariantStream::checkVariant sur les postes non patchés.
+		const auto profileSignature = arguments.value( argToString( Argument::ProfileSignature ) ).toByteArray();
 
 		FeatureMessage outbound{ featureUid, FeatureCommand::StartExam };
 		outbound.addArgument( Argument::BlockedApps, apps )
@@ -292,13 +295,15 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 		FeatureMessage outbound{ featureUid, FeatureCommand::StopExam };
 		outbound.addArgument( Argument::SessionId, sessionId )
 			.addArgument( Argument::Sequence, static_cast<qlonglong>( sequence ) )
-			.addArgument( Argument::IssuedAt, arguments.value( argToString( Argument::IssuedAt ), now ) )
-			.addArgument( Argument::ExpiresAt, arguments.value( argToString( Argument::ExpiresAt ), now + 300000 ) )
-			.addArgument( Argument::HighSecurity, arguments.value( argToString( Argument::HighSecurity ) ) )
-			.addArgument( Argument::RequiredCapabilities, arguments.value( argToString( Argument::RequiredCapabilities ) ) )
-			.addArgument( Argument::ExternalCapabilities, arguments.value( argToString( Argument::ExternalCapabilities ) ) )
-			.addArgument( Argument::SigningKeyId, arguments.value( argToString( Argument::SigningKeyId ) ) )
-			.addArgument( Argument::ProfileSignature, arguments.value( argToString( Argument::ProfileSignature ) ) );
+			// TOUJOURS des types concrets (voir StartExam) : un QVariant invalide
+			// fait rejeter la map entière par checkVariant sur poste non patché.
+			.addArgument( Argument::IssuedAt, arguments.value( argToString( Argument::IssuedAt ), now ).toLongLong() )
+			.addArgument( Argument::ExpiresAt, arguments.value( argToString( Argument::ExpiresAt ), now + 300000 ).toLongLong() )
+			.addArgument( Argument::HighSecurity, arguments.value( argToString( Argument::HighSecurity ) ).toBool() )
+			.addArgument( Argument::RequiredCapabilities, arguments.value( argToString( Argument::RequiredCapabilities ) ).toStringList() )
+			.addArgument( Argument::ExternalCapabilities, arguments.value( argToString( Argument::ExternalCapabilities ) ).toMap() )
+			.addArgument( Argument::SigningKeyId, arguments.value( argToString( Argument::SigningKeyId ) ).toString() )
+			.addArgument( Argument::ProfileSignature, arguments.value( argToString( Argument::ProfileSignature ) ).toByteArray() );
 		{
 			QMutexLocker locker( &m_remoteStatusMutex );
 			for( const auto& controlInterface : computerControlInterfaces )

@@ -48,6 +48,7 @@ private:
 	bool checkInt();
 	bool checkLong();
 	bool checkULong();
+	bool checkDouble();
 	bool checkRect();
 	bool checkString();
 	bool checkStringList();

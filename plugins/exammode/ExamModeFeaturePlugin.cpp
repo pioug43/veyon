@@ -1109,19 +1109,17 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	}
 
 	// Client VDI plein écran à l'activation : on tente de forcer ; si impossible,
-	// on prévient l'étudiant dans sa session et on lui laisse FullscreenGraceSeconds
-	// pour s'exécuter avant que le driftTimer ne remonte la violation.
+	// on accorde FullscreenGraceSeconds avant que le driftTimer ne remonte la
+	// violation. AUCUN message natif ici : toutes les notifications à l'étudiant
+	// passent par le canal UNIQUE Veyon TextMessage, piloté par le portail
+	// (cohérence : le portail détecte VDI_CLIENT_NOT_FULLSCREEN via examStatus et
+	// envoie lui-même le message « passez en plein écran »).
 	m_fullscreenGraceUntilMs = 0;
 	if( ExamModeVdiClient::fullscreenState() == ExamModeVdiClient::State::NotFullscreen )
 	{
 		ExamModeVdiClient::forceFullscreen();
 		if( ExamModeVdiClient::fullscreenState() != ExamModeVdiClient::State::Fullscreen )
 		{
-			ExamModeVdiClient::showSessionMessage(
-				tr("Exam mode"),
-				tr("Exam mode is starting.\n\nPut the Omnissa Horizon client in full screen "
-				   "within 1 minute — otherwise a violation is reported to your supervisor."),
-				FullscreenGraceSeconds );
 			m_fullscreenGraceUntilMs = QDateTime::currentMSecsSinceEpoch() +
 				static_cast<qint64>( FullscreenGraceSeconds ) * 1000;
 		}

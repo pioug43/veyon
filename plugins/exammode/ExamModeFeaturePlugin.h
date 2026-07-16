@@ -268,6 +268,7 @@ private:
 	QString m_errorMessage{};
 	QVariantMap m_capabilities{};
 	QVariantMap m_backendResults{};
+	QVariantMap m_lastDriftDetails{};	// première dérive constatée (diagnostic distant)
 	qint64 m_statusTimestampMs{0};
 	// Fin (epoch ms) du délai de grâce accordé à l'étudiant pour passer le client
 	// VDI en plein écran à l'activation. 0 = pas de grâce en cours.

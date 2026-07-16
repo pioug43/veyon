@@ -133,6 +133,15 @@ bool VariantStream::checkULong()
 
 
 
+bool VariantStream::checkDouble()
+{
+	double d;
+	m_dataStream >> d;
+	return m_dataStream.status() == QDataStream::Status::Ok;
+}
+
+
+
 bool VariantStream::checkRect()
 {
 	qint32 i;
@@ -220,11 +229,17 @@ bool VariantStream::checkVariant(int depth)
 
 	switch(typeId)
 	{
+	// Variant invalide/nul (QVariant{}) : aucune charge utile à consommer.
+	// Sans ce cas, UN SEUL argument non renseigné (ex. ProfileSignature
+	// absent) faisait rejeter TOUTE la map d'arguments d'un FeatureMessage,
+	// en silence (même famille de bug que ULongLong).
+	case QMetaType::UnknownType: return m_dataStream.status() == QDataStream::Status::Ok;
 	case QMetaType::Bool: return checkBool();
 	case QMetaType::QByteArray: return checkByteArray();
 	case QMetaType::Int: return checkInt();
 	case QMetaType::LongLong: return checkLong();
 	case QMetaType::ULongLong: return checkULong();
+	case QMetaType::Double: return checkDouble();
 	case QMetaType::QRect: return checkRect();
 	case QMetaType::QString: return checkString();
 	case QMetaType::QStringList: return checkStringList();

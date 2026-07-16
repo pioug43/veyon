@@ -11,14 +11,28 @@ build_veyon_plugin(exammode
 	ExamModeProfile.h
 	ExamModeSession.cpp
 	ExamModeSession.h
+	ExamModeVdiClient.cpp
+	ExamModeVdiClient.h
 	ExamModeWindowsNative.cpp
 	ExamModeWindowsNative.h
 	)
 
 if(WIN32)
-	# advapi32 : registre/ACL ; user32 : énumération de fenêtres + moniteurs
-	# (contrôle plein écran du client VDI Omnissa Horizon).
-	target_link_libraries(exammode PRIVATE advapi32 user32)
+	# advapi32 : registre/ACL ; user32 : énumération de fenêtres + moniteurs ;
+	# wtsapi32 : message dans la session interactive (WTSSendMessage). Ensemble :
+	# contrôle/forçage plein écran du client VDI Omnissa Horizon + avertissement.
+	target_link_libraries(exammode PRIVATE advapi32 user32 wtsapi32)
+endif()
+
+# Contrôle/forçage plein écran du client VDI sous Linux : X11/EWMH. Optionnel —
+# sans X11 (build headless), le module retombe sur un no-op (Unknown/false).
+if(UNIX AND NOT APPLE)
+	find_package(X11)
+	if(X11_FOUND)
+		target_compile_definitions(exammode PRIVATE EXAMMODE_HAVE_X11)
+		target_include_directories(exammode PRIVATE ${X11_INCLUDE_DIR})
+		target_link_libraries(exammode PRIVATE ${X11_LIBRARIES})
+	endif()
 endif()
 
 if(WITH_TESTS)

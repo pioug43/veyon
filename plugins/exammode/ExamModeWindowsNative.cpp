@@ -8,7 +8,6 @@
 
 #include <QByteArray>
 #include <QSet>
-#include <QString>
 
 #include <cstring>
 
@@ -116,88 +115,6 @@ bool writeRawValue( const QString& key, const QString& name, DWORD type, const Q
 		reinterpret_cast<const BYTE*>( raw.constData() ), static_cast<DWORD>( raw.size() ) );
 	RegCloseKey( handle );
 	return result == ERROR_SUCCESS;
-}
-
-
-struct VdiScan
-{
-	bool found{false};
-	bool fullscreen{false};
-};
-
-
-// Le processus propriétaire de la fenêtre est-il le client VDI Horizon ?
-// Robuste au renommage VMware→Omnissa et aux variantes de version.
-bool windowBelongsToVdiClient( HWND hwnd )
-{
-	DWORD pid = 0;
-	GetWindowThreadProcessId( hwnd, &pid );
-	if( pid == 0 )
-	{
-		return false;
-	}
-	const HANDLE process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid );
-	if( process == nullptr )
-	{
-		return false;
-	}
-	wchar_t buffer[MAX_PATH];
-	DWORD size = MAX_PATH;
-	QString base;
-	if( QueryFullProcessImageNameW( process, 0, buffer, &size ) )
-	{
-		const auto full = QString::fromWCharArray( buffer, static_cast<int>( size ) );
-		const auto separator = qMax( full.lastIndexOf( QLatin1Char('\\') ), full.lastIndexOf( QLatin1Char('/') ) );
-		base = full.mid( separator + 1 ).toLower();
-	}
-	CloseHandle( process );
-	return base.contains( QLatin1String("vmware-view") ) ||
-		   base.contains( QLatin1String("omnissa") ) ||
-		   ( base.contains( QLatin1String("horizon") ) && base.contains( QLatin1String("client") ) );
-}
-
-
-BOOL CALLBACK vdiEnumProc( HWND hwnd, LPARAM lparam )
-{
-	if( IsWindowVisible( hwnd ) == FALSE )
-	{
-		return TRUE;
-	}
-	if( windowBelongsToVdiClient( hwnd ) == false )
-	{
-		return TRUE;
-	}
-	RECT windowRect;
-	if( GetWindowRect( hwnd, &windowRect ) == FALSE )
-	{
-		return TRUE;
-	}
-	// Ignorer les fenêtres auxiliaires (barres d'outils, notifications) du client.
-	if( ( windowRect.right - windowRect.left ) < 200 || ( windowRect.bottom - windowRect.top ) < 200 )
-	{
-		return TRUE;
-	}
-	const HMONITOR monitor = MonitorFromWindow( hwnd, MONITOR_DEFAULTTONEAREST );
-	MONITORINFO monitorInfo;
-	monitorInfo.cbSize = sizeof( monitorInfo );
-	if( GetMonitorInfoW( monitor, &monitorInfo ) == FALSE )
-	{
-		return TRUE;
-	}
-	auto* scan = reinterpret_cast<VdiScan*>( lparam );
-	scan->found = true;
-	// Plein écran = la fenêtre couvre TOUT le moniteur (rcMonitor, barre des tâches
-	// incluse). Une fenêtre « maximisée » ne couvre que la zone de travail (rcWork)
-	// et laisse la barre des tâches — donc l'hôte accessible : NON plein écran.
-	const RECT& m = monitorInfo.rcMonitor;
-	const bool coversMonitor = windowRect.left <= m.left && windowRect.top <= m.top &&
-							   windowRect.right >= m.right && windowRect.bottom >= m.bottom;
-	if( coversMonitor )
-	{
-		scan->fullscreen = true;
-		return FALSE;	// une fenêtre client plein écran suffit : on arrête l'énumération
-	}
-	return TRUE;		// continuer : une autre fenêtre du client est peut-être plein écran
 }
 
 }
@@ -426,22 +343,6 @@ bool restrictFileToAdministratorsAndSystem( const QString& path )
 #else
 	Q_UNUSED( path )
 	return true;
-#endif
-}
-
-
-VdiClientState vdiClientFullscreenState()
-{
-#if defined(Q_OS_WIN)
-	VdiScan scan;
-	EnumWindows( vdiEnumProc, reinterpret_cast<LPARAM>( &scan ) );
-	if( scan.found == false )
-	{
-		return VdiClientState::Unknown;
-	}
-	return scan.fullscreen ? VdiClientState::Fullscreen : VdiClientState::NotFullscreen;
-#else
-	return VdiClientState::Unknown;
 #endif
 }
 

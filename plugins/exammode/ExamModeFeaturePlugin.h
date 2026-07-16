@@ -268,6 +268,9 @@ private:
 	QVariantMap m_capabilities{};
 	QVariantMap m_backendResults{};
 	qint64 m_statusTimestampMs{0};
+	// Fin (epoch ms) du délai de grâce accordé à l'étudiant pour passer le client
+	// VDI en plein écran à l'activation. 0 = pas de grâce en cours.
+	qint64 m_fullscreenGraceUntilMs{0};
 	QString m_statusSessionId{};
 	quint64 m_statusSequence{0};
 	// Version monotone du statut : n'émettre le rapport ExamStatus (par client) que
@@ -285,4 +288,7 @@ private:
 	// délimiteurs de notre section dans le fichier hosts (retrait propre au stop)
 	static constexpr auto HostsMarkerBegin = "# >>> Veyon ExamMode >>>";
 	static constexpr auto HostsMarkerEnd = "# <<< Veyon ExamMode <<<";
+
+	// Délai laissé à l'étudiant pour se mettre en plein écran à l'activation.
+	static constexpr int FullscreenGraceSeconds = 60;
 };

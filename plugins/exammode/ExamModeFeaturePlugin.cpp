@@ -45,6 +45,7 @@
 #include "ExamModeLinuxExecGuard.h"
 #include "ExamModeProfile.h"
 #include "ExamModeSession.h"
+#include "ExamModeVdiClient.h"
 #include "ExamModeWindowsNative.h"
 #include "FeatureMessage.h"
 #include "Filesystem.h"
@@ -1068,16 +1069,23 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			// l'étudiant peut atteindre l'hôte physique → on remonte une erreur.
 			// Unknown (client non visible / hors session interactive) = non concluant,
 			// donc PAS une violation (évite les faux positifs).
-			if( ExamModeWindowsNative::vdiClientFullscreenState() ==
-					ExamModeWindowsNative::VdiClientState::NotFullscreen )
+			const auto vdiState = ExamModeVdiClient::fullscreenState();
+			if( vdiState == ExamModeVdiClient::State::NotFullscreen )
 			{
-				setStatus( QStringLiteral("DEGRADED"), QStringLiteral("VDI_CLIENT_NOT_FULLSCREEN"),
-					QStringLiteral("The Omnissa Horizon client is not in full screen") );
+				// Pendant le délai de grâce d'activation : on n'alerte pas encore
+				// (l'étudiant a été prévenu et dispose d'1 minute).
+				if( m_fullscreenGraceUntilMs == 0 ||
+					QDateTime::currentMSecsSinceEpoch() >= m_fullscreenGraceUntilMs )
+				{
+					setStatus( QStringLiteral("DEGRADED"), QStringLiteral("VDI_CLIENT_NOT_FULLSCREEN"),
+						QStringLiteral("The Omnissa Horizon client is not in full screen") );
+				}
 				return;
 			}
-			// Application saine et client de nouveau plein écran (ou non concluant) :
-			// on lève une dégradation due UNIQUEMENT au plein écran (alerte
+			// Plein écran (ou non concluant) : la grâce n'a plus lieu d'être, et on
+			// lève une dégradation due UNIQUEMENT au plein écran (alerte
 			// auto-résolutive dès que l'étudiant repasse en plein écran).
+			m_fullscreenGraceUntilMs = 0;
 			if( m_status == QStringLiteral("DEGRADED") &&
 				m_errorCode == QStringLiteral("VDI_CLIENT_NOT_FULLSCREEN") )
 			{
@@ -1099,6 +1107,26 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	{
 		m_capabilities.insert( it.key(), it.value() );
 	}
+
+	// Client VDI plein écran à l'activation : on tente de forcer ; si impossible,
+	// on prévient l'étudiant dans sa session et on lui laisse FullscreenGraceSeconds
+	// pour s'exécuter avant que le driftTimer ne remonte la violation.
+	m_fullscreenGraceUntilMs = 0;
+	if( ExamModeVdiClient::fullscreenState() == ExamModeVdiClient::State::NotFullscreen )
+	{
+		ExamModeVdiClient::forceFullscreen();
+		if( ExamModeVdiClient::fullscreenState() != ExamModeVdiClient::State::Fullscreen )
+		{
+			ExamModeVdiClient::showSessionMessage(
+				tr("Exam mode"),
+				tr("Exam mode is starting.\n\nPut the Omnissa Horizon client in full screen "
+				   "within 1 minute — otherwise a violation is reported to your supervisor."),
+				FullscreenGraceSeconds );
+			m_fullscreenGraceUntilMs = QDateTime::currentMSecsSinceEpoch() +
+				static_cast<qint64>( FullscreenGraceSeconds ) * 1000;
+		}
+	}
+
 	if( m_status != QStringLiteral("DEGRADED") )
 	{
 		setStatus( QStringLiteral("APPLIED"), {}, {}, results );
@@ -1113,6 +1141,7 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 void ExamModeFeaturePlugin::stopEnforcement()
 {
 	m_active = false;
+	m_fullscreenGraceUntilMs = 0;
 	m_hostsSignature.clear();
 	m_appsSignature.clear();
 	if( m_timer )

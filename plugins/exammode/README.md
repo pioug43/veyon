@@ -180,30 +180,41 @@ API feature-status route merges this detail with the ordinary `active` flag.
 
 While an exam is active, the 10-second drift monitor also verifies that the
 Omnissa Horizon (formerly VMware Horizon) VDI client occupies an entire screen. A
-windowed or merely *maximized* client leaves the physical host reachable behind
-it, so the endpoint reports `DEGRADED` with error code `VDI_CLIENT_NOT_FULLSCREEN`.
-The client process is matched by executable (`vmware-view` / `omnissa` /
-`horizon`+`client`), robust to the VMware→Omnissa rename. Cross-platform, in
-`ExamModeVdiClient`:
+windowed or partial client leaves the physical host reachable behind it, so the
+endpoint reports `DEGRADED` with error code `VDI_CLIENT_NOT_FULLSCREEN`.
 
-- **Windows** — `EnumWindows` + compare the window rectangle to the monitor's full
-  bounds (`rcMonitor`, taskbar included), so a maximized-to-work-area window is
-  correctly flagged as *not* full screen.
+The VDI client runs on the **physical endpoint, not inside the VM**, so it can
+*never* be found by enumerating the guest's own windows — an earlier
+`EnumWindows`-for-the-client-process approach always returned *inconclusive* and
+never raised a violation. Instead, on Windows we compare two facts the Horizon
+agent publishes into the registry (readable by the Veyon service running as
+SYSTEM). Cross-platform, in `ExamModeVdiClient`:
+
+- **Windows** — read the endpoint's *physical* monitor layout
+  (`HKLM\SOFTWARE\Omnissa\Horizon\SessionData\<id>\ViewClient_Displays.Topology`)
+  and what the remote session *actually* renders
+  (`…\Blast\Telemetry\<id>\ViewClient_Current_Topology`, JSON; fallback:
+  `EnumDisplayMonitors` on the guest desktop). If the remote session spans fewer
+  monitors, or a smaller bounding box (5% tolerance for DPI scaling), than the
+  physical hardware, part of the host stays visible → *not* full screen. The
+  `VMware, Inc.\VMware VDM` root is also tried for older agents.
 - **Linux (X11/EWMH)** — enumerate `_NET_CLIENT_LIST`, resolve the owning PID
   (`_NET_WM_PID` → `/proc/<pid>/comm`+`cmdline`), and treat a window as full screen
   if it carries `_NET_WM_STATE_FULLSCREEN` or geometrically covers the screen.
   Requires X11 (built when `find_package(X11)` succeeds; Wayland-native windows
-  are not enumerable — falls back to *inconclusive*).
+  are not enumerable — falls back to *inconclusive*). Note: on a real Linux VDI
+  *guest* the client is likewise on the physical endpoint and absent from the
+  guest's X server, so this path is *inconclusive* there; the registry equivalent
+  of the Windows topology check remains to be wired up for Linux.
 
-When no client window is visible (client absent, or the check runs without access
-to the graphical session — e.g. as SYSTEM/root without a display) the result is
-*inconclusive* and raises no violation, avoiding false positives. The alert is
-self-resolving: once the student returns the client to full screen the status
-clears back to `APPLIED`.
+When the client topology cannot be read (physical PC/console, outside a Horizon
+session, or agent data absent) the result is *inconclusive* and raises no
+violation, avoiding false positives. The alert is self-resolving: once the student
+returns the client to full screen the status clears back to `APPLIED`.
 
 **At activation**, if the client is not already full screen, the endpoint first
-tries to **force** it — Windows: bring the main window to the foreground and
-extend it to cover the monitor (`SetWindowPos`, topmost); Linux: request
+tries to **force** it — Windows: not possible from inside the guest (the client is
+on the physical endpoint), so it only re-checks the state; Linux: request
 `_NET_WM_STATE_FULLSCREEN` from the window manager (EWMH). If forcing does not
 achieve full screen, it shows a **non-blocking message in the student's session**
 — Windows `WTSSendMessage` (works even from SYSTEM), Linux `notify-send`

@@ -77,9 +77,13 @@ private Q_SLOTS:
 	void handlesPipelinedAndFragmentedHandshake();
 	void rejectsOversizedCutText();
 	void rejectsOversizedVariantMessageEarly();
+	void updatesFramebufferSizeOnNewFBSize();
+	void acceptsRealRectOnDesktopEnlargedViaExtDesktopSize();
 
 private:
 	static void completeHandshake(DuplexDevice& device, VncClientProtocol& protocol);
+	static QByteArray framebufferUpdateHeader(uint16_t nRects);
+	static QByteArray rectHeader(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint32_t encoding);
 };
 
 
@@ -108,6 +112,83 @@ void VncProtocolRobustnessTest::completeHandshake(DuplexDevice& device, VncClien
 	device.appendInput(QByteArrayLiteral("test"));
 	QVERIFY(protocol.read());
 	QCOMPARE(protocol.state(), VncClientProtocol::Running);
+}
+
+
+QByteArray VncProtocolRobustnessTest::framebufferUpdateHeader(uint16_t nRects)
+{
+	rfbFramebufferUpdateMsg update{};
+	update.type = rfbFramebufferUpdate;
+	update.nRects = qToBigEndian<uint16_t>(nRects);
+	return QByteArray(reinterpret_cast<const char*>(&update), sz_rfbFramebufferUpdateMsg);
+}
+
+
+QByteArray VncProtocolRobustnessTest::rectHeader(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint32_t encoding)
+{
+	rfbFramebufferUpdateRectHeader header{};
+	header.r.x = qToBigEndian<uint16_t>(x);
+	header.r.y = qToBigEndian<uint16_t>(y);
+	header.r.w = qToBigEndian<uint16_t>(w);
+	header.r.h = qToBigEndian<uint16_t>(h);
+	header.encoding = qToBigEndian<uint32_t>(encoding);
+	return QByteArray(reinterpret_cast<const char*>(&header), sz_rfbFramebufferUpdateRectHeader);
+}
+
+
+// Non-régression multi-écran : le pseudo-encoding NewFBSize doit actualiser les
+// dimensions du framebuffer, sinon le contrôle de bornes rejette ensuite tout
+// rectangle de la zone étendue (vignette/prise de main noire).
+void VncProtocolRobustnessTest::updatesFramebufferSizeOnNewFBSize()
+{
+	DuplexDevice device;
+	VncClientProtocol protocol(&device, {});
+	completeHandshake(device, protocol);
+	QCOMPARE(protocol.framebufferWidth(), 640);
+	QCOMPARE(protocol.framebufferHeight(), 480);
+
+	device.appendInput(framebufferUpdateHeader(1) +
+					   rectHeader(0, 0, 1920, 1080, rfbEncodingNewFBSize));
+	QVERIFY(protocol.receiveMessage());
+	QCOMPARE(protocol.framebufferWidth(), 1920);
+	QCOMPARE(protocol.framebufferHeight(), 1080);
+	QVERIFY(device.isOpen());
+}
+
+
+// Non-régression multi-écran : après un ExtDesktopSize vers un bureau 5760×1080
+// (3 moniteurs 1920×1080), un rectangle réel situé sur le 3e moniteur (x=3840)
+// doit être accepté. Sans la mise à jour des dimensions, il était rejeté
+// (« framebuffer update rectangle outside framebuffer ») et la socket fermée —
+// l'écran noir observé sur poste VDI Linux à l'extension de l'affichage.
+void VncProtocolRobustnessTest::acceptsRealRectOnDesktopEnlargedViaExtDesktopSize()
+{
+	DuplexDevice device;
+	VncClientProtocol protocol(&device, {});
+	completeHandshake(device, protocol);
+
+	// ExtDesktopSize : en-tête w/h = nouvelle taille, charge utile = 1 écran
+	rfbExtDesktopSizeMsg extDesktopSize{};
+	extDesktopSize.numberOfScreens = 1;
+	rfbExtDesktopScreen screen{};
+	screen.width = qToBigEndian<uint16_t>(5760);
+	screen.height = qToBigEndian<uint16_t>(1080);
+	device.appendInput(framebufferUpdateHeader(1) +
+					   rectHeader(0, 0, 5760, 1080, rfbEncodingExtDesktopSize) +
+					   QByteArray(reinterpret_cast<const char*>(&extDesktopSize), sz_rfbExtDesktopSizeMsg) +
+					   QByteArray(reinterpret_cast<const char*>(&screen), sz_rfbExtDesktopScreen));
+	QVERIFY(protocol.receiveMessage());
+	QCOMPARE(protocol.framebufferWidth(), 5760);
+	QCOMPARE(protocol.framebufferHeight(), 1080);
+
+	// Rectangle réel (Raw) sur le 3e moniteur : 16×1 pixels à x=3840
+	const int rawPixels = 16 * 1 * 4;	// bitsPerPixel=32 (handshake)
+	device.appendInput(framebufferUpdateHeader(1) +
+					   rectHeader(3840, 0, 16, 1, rfbEncodingRaw) +
+					   QByteArray(rawPixels, '\x2a'));
+	QVERIFY(protocol.receiveMessage());
+	QVERIFY(device.isOpen());
+	QCOMPARE(protocol.lastUpdatedRect(), QRect(3840, 0, 16, 1));
 }
 
 

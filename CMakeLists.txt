@@ -197,12 +197,20 @@ if(WITH_BUNDLED_LIBVNC)
 	set(WITH_SASL OFF)
 	set(WITH_SDL OFF)
 	set(WITH_SYSTEMD OFF)
+	# libvncserver réutilise le nom d'option WITH_TESTS : le mettre à OFF pour lui
+	# écrasait silencieusement celui de Veyon dans la portée courante et
+	# désactivait TOUTE la suite de tests unitaires dès que le libvncserver
+	# embarqué était activé. On sauvegarde/restaure la valeur de Veyon.
+	set(VEYON_WITH_TESTS ${WITH_TESTS})
 	set(WITH_TESTS OFF)
 	set(WITH_TIGHTVNC_FILETRANSFER OFF)
 	set(WITH_XCB OFF)
 	set(LIBVNCSERVER_INSTALL OFF)
 
 	add_subdirectory(${libvncserver_SOURCE_DIR})
+
+	set(WITH_TESTS ${VEYON_WITH_TESTS})
+	unset(VEYON_WITH_TESTS)
 
 	set_default_target_properties(vncclient)
 	set_default_target_properties(vncserver)

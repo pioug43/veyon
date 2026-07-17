@@ -52,6 +52,7 @@ private:
 	static constexpr auto ServerRestartInterval = 5000;
 
 	void connectToLoginManager();
+	static int sessionSelectionRank( const QString& sessionPath );
 	void startServers();
 	void startServer( const QString& sessionPath );
 	void deferServerStart( const QString& sessionPath, int delay );

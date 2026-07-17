@@ -1307,9 +1307,15 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 		m_urlRules.isEmpty() == false || m_defaultUrlAction == ExamModeProfile::RuleAction::Block ) )
 	{
 #if defined(Q_OS_WIN)
+		// Windows : le filtrage passe par le PAC + politiques navigateur en
+		// registre (applyWindowsSiteFiltering) — JAMAIS par le fichier hosts.
+		// Le contrôle hosts ci-dessous ne doit pas s'exécuter ici : non gardé,
+		// il écrasait ce résultat et, le marqueur hosts n'existant jamais sous
+		// Windows, produisait un ENFORCEMENT_DRIFT permanent (faux positif).
 		networkHealthy = registryStateHealthy( siteFilterStateFile(), QStringLiteral("network") ) &&
 			QFile::exists( pacFilePath() );
-#elif defined(Q_OS_LINUX)
+#else
+#if defined(Q_OS_LINUX)
 		if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall )
 		{
 			QProcess nft;
@@ -1330,6 +1336,7 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 			networkHealthy = hosts.open( QIODevice::ReadOnly | QIODevice::Text ) &&
 				hosts.readAll().contains( HostsMarkerBegin );
 		}
+#endif
 		if( networkHealthy == false && m_lastDriftDetails.isEmpty() )
 		{
 			m_lastDriftDetails = QVariantMap{

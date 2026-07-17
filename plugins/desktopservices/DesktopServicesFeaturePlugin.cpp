@@ -382,7 +382,7 @@ void DesktopServicesFeaturePlugin::runApplicationAsUser( const QString& commandL
 	// serveur de session). C'est un lancement de programme déjà authentifié par le
 	// portail (keyfile) : aucune élévation de privilège n'est introduite.
 	program = QStringLiteral("/bin/sh");
-	parameters = { QStringLiteral("-c"), commandLine };
+	parameters = QStringList() << QStringLiteral("-c") << commandLine;
 #else
 	// parse command line format "C:\Program Files\..." -foo -bar
 	if( commandLine.startsWith( QLatin1Char('"') ) && commandLine.count( QLatin1Char('"') ) > 1 )

@@ -72,6 +72,10 @@ public:
 private:
 	static QString componentName();
 	static void pruneOldReports( const QString& spoolDir, int keep );
+	// Téléverse au démarrage les rapports en attente vers le portail (le Web API
+	// du broker ne pouvant pas atteindre les VM). Hors gestionnaire de crash :
+	// contexte normal, HTTP autorisé.
+	static void uploadPendingReports( const QString& spoolDir, const QString& url, const QString& token );
 
 	static constexpr int MaxRetainedReports = 25;
 

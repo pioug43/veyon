@@ -23,8 +23,16 @@
  */
 
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QTimer>
+#include <QUrl>
 
 #include "CrashReportPlugin.h"
 #include "CrashHandler.h"
@@ -50,6 +58,14 @@ CrashReportPlugin::CrashReportPlugin( QObject* parent ) :
 	// Purge des anciens rapports au démarrage (jamais dans le gestionnaire de
 	// crash, qui doit rester minimal).
 	pruneOldReports( spoolDir, MaxRetainedReports );
+
+	// Téléversement des rapports en attente vers le portail (consolidation des
+	// plantages des postes, que le Web API du broker ne peut pas récupérer).
+	const auto uploadUrl = VeyonCore::config().crashReportUploadUrl();
+	if( uploadUrl.isEmpty() == false )
+	{
+		uploadPendingReports( spoolDir, uploadUrl, VeyonCore::config().crashReportUploadToken() );
+	}
 
 	const auto logDir = VeyonCore::filesystem().expandPath( VeyonCore::config().logFileDirectory() );
 
@@ -107,5 +123,89 @@ void CrashReportPlugin::pruneOldReports( const QString& spoolDir, int keep )
 			continue;
 		}
 		usedBytes += reportBytes;
+	}
+}
+
+
+
+void CrashReportPlugin::uploadPendingReports( const QString& spoolDir, const QString& url, const QString& token )
+{
+	const QUrl endpoint( url );
+	if( endpoint.isValid() == false || endpoint.scheme().isEmpty() )
+	{
+		vWarning() << "CrashReport: invalid upload URL" << url;
+		return;
+	}
+
+	QDir dir( spoolDir );
+	const auto reports = dir.entryInfoList( { QStringLiteral("crash-*.json") }, QDir::Files, QDir::Time );
+	if( reports.isEmpty() )
+	{
+		return;
+	}
+
+	QNetworkAccessManager nam;
+
+	for( const auto& fileInfo : reports )
+	{
+		QFile f( fileInfo.absoluteFilePath() );
+		if( f.open( QIODevice::ReadOnly ) == false )
+		{
+			continue;
+		}
+		const auto doc = QJsonDocument::fromJson( f.readAll() );
+		f.close();
+		if( doc.isObject() == false )
+		{
+			continue;
+		}
+
+		// Le portail identifie un rapport par (host, id) ; l'id = base du fichier.
+		auto obj = doc.object();
+		obj.insert( QStringLiteral("id"), fileInfo.completeBaseName() );
+
+		QNetworkRequest req( endpoint );
+		req.setHeader( QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json") );
+		req.setRawHeader( QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json") );
+		if( token.isEmpty() == false )
+		{
+			req.setRawHeader( QByteArrayLiteral("X-Crash-Token"), token.toUtf8() );
+		}
+
+		// POST borné (5 s) : ne jamais retarder le démarrage du composant.
+		QEventLoop loop;
+		QTimer timer;
+		timer.setSingleShot( true );
+		auto* reply = nam.post( req, QJsonDocument( obj ).toJson( QJsonDocument::Compact ) );
+		QObject::connect( reply, &QNetworkReply::finished, &loop, &QEventLoop::quit );
+		QObject::connect( &timer, &QTimer::timeout, &loop, &QEventLoop::quit );
+		timer.start( 5000 );
+		loop.exec();
+
+		const int httpStatus = reply->attribute( QNetworkRequest::HttpStatusCodeAttribute ).toInt();
+		const bool ok = reply->isFinished() && reply->error() == QNetworkReply::NoError && httpStatus / 100 == 2;
+		if( reply->isFinished() == false )
+		{
+			reply->abort();
+		}
+		reply->deleteLater();
+
+		if( ok )
+		{
+			// Accepté par le portail : on retire le rapport (et ses frères
+			// .trace/.dmp) pour ne pas le re-téléverser.
+			for( const auto& sibling : dir.entryInfoList( { fileInfo.completeBaseName() + QStringLiteral(".*") }, QDir::Files ) )
+			{
+				QFile::remove( sibling.absoluteFilePath() );
+			}
+			vDebug() << "CrashReport: uploaded" << fileInfo.fileName();
+		}
+		else
+		{
+			// Portail injoignable / jeton refusé : on conserve le fichier pour
+			// le prochain démarrage et on n'insiste pas (démarrage prioritaire).
+			vWarning() << "CrashReport: upload failed for" << fileInfo.fileName() << "status" << httpStatus;
+			break;
+		}
 	}
 }

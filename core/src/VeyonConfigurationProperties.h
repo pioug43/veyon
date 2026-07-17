@@ -106,6 +106,8 @@
 #define FOREACH_VEYON_CRASHREPORT_CONFIG_PROPERTY(OP) \
 	OP( VeyonConfiguration, VeyonCore::config(), bool, crashReportingEnabled, setCrashReportingEnabled, "CrashReportingEnabled", "CrashReport", true, Configuration::Property::Flag::Standard )		\
 	OP( VeyonConfiguration, VeyonCore::config(), QString, crashReportDirectory, setCrashReportDirectory, "CrashReportDirectory", "CrashReport", QStringLiteral("%GLOBALAPPDATA%/crashes"), Configuration::Property::Flag::Standard )		\
+	OP( VeyonConfiguration, VeyonCore::config(), QString, crashReportUploadUrl, setCrashReportUploadUrl, "CrashReportUploadUrl", "CrashReport", QString(), Configuration::Property::Flag::Standard )		\
+	OP( VeyonConfiguration, VeyonCore::config(), QString, crashReportUploadToken, setCrashReportUploadToken, "CrashReportUploadToken", "CrashReport", QString(), Configuration::Property::Flag::Standard )		\
 
 #define FOREACH_VEYON_VNC_SERVER_CONFIG_PROPERTY(OP) \
 	OP( VeyonConfiguration, VeyonCore::config(), QUuid, vncServerPlugin, setVncServerPlugin, "Plugin", "VncServer", QUuid(), Configuration::Property::Flag::Standard )	\

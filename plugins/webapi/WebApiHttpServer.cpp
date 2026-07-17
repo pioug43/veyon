@@ -26,9 +26,14 @@
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
 #include <QtHttpServer/qhttpserverfutureresponse.h>
 #endif
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QEvent>
 #include <QJsonDocument>
 #include <QSslCertificate>
 #include <QSslKey>
+#include <QTcpSocket>
+#include <QTimer>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
 #include <QSslServer>
 #endif
@@ -153,6 +158,36 @@ WebApiHttpServer::WebApiHttpServer( const WebApiConfiguration& configuration, QO
 	__serverInstance = this;
 
 	m_threadPool.setMaxThreadCount( m_configuration.connectionLimit() );
+
+	// Voir eventFilter() : intercepte la destruction différée des QTcpSocket du
+	// thread serveur pendant qu'une réponse asynchrone est en vol.
+	QCoreApplication::instance()->installEventFilter( this );
+}
+
+
+
+bool WebApiHttpServer::eventFilter( QObject* watched, QEvent* event )
+{
+	if( event->type() == QEvent::DeferredDelete &&
+		qobject_cast<QTcpSocket*>( watched ) != nullptr &&
+		watched->thread() == thread() )
+	{
+		// Fenêtre de danger : une réponse est encore calculée dans le pool OU
+		// vient de se terminer (la continuation de QHttpServer, qui écrit dans
+		// le socket, s'exécute juste après sur ce thread). Dans les deux cas on
+		// diffère la destruction du socket de 200 ms : écrire dans un socket
+		// vivant mais déconnecté est inoffensif, écrire dans un socket détruit
+		// est un segfault (observé : crash-loop du broker toutes les ~60 s dès
+		// qu'un client HTTP abandonnait — poste injoignable + timeout portail).
+		constexpr qint64 GraceMs = 3000;
+		const auto sinceLast = QDateTime::currentMSecsSinceEpoch() - m_lastResponseFinishedMs.load();
+		if( m_pendingResponses.load() > 0 || sinceLast < GraceMs )
+		{
+			QTimer::singleShot( 200, watched, &QObject::deleteLater );
+			return true;
+		}
+	}
+	return QObject::eventFilter( watched, event );
 }
 
 
@@ -291,9 +326,16 @@ bool WebApiHttpServer::addRoute( const QString& path,
 				return QFuture<QHttpServerResponse>{ &fi };
 			}
 
+			// Comptage des réponses en vol pour eventFilter() (anti-crash socket
+			// détruit) : décrément + horodatage à la FIN du calcul, la fenêtre de
+			// grâce couvre l'écriture de la réponse par la continuation QHttpServer.
+			++m_pendingResponses;
 			return QtConcurrent::run(&m_threadPool, [=, this] {
-				return convertResponse(controllerRequest,
+				auto response = convertResponse(controllerRequest,
 									   (m_controller->*controllerMethod)(controllerRequest, std::forward<Args>(args)... ));
+				m_lastResponseFinishedMs.store( QDateTime::currentMSecsSinceEpoch() );
+				--m_pendingResponses;
+				return response;
 			});
 		} );
 }

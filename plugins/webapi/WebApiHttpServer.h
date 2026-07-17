@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include <QObject>
 
 #include "WebApiController.h"
@@ -44,6 +46,13 @@ public:
 	~WebApiHttpServer() override;
 
 	bool start();
+
+	// Garde-fou anti-crash Qt ≤ 6.7 (QTBUG : QHttpServer::sendResponse écrit la
+	// réponse d'un QFuture dans un QTcpSocket déjà détruit quand le client HTTP
+	// abandonne sa requête → segfault QAbstractSocket::state()). On retarde la
+	// destruction différée des sockets du thread serveur tant que des réponses
+	// sont en vol (+ fenêtre de grâce le temps que la continuation écrive).
+	bool eventFilter( QObject* watched, QEvent* event ) override;
 
 private:
 	enum class Method {
@@ -68,6 +77,9 @@ private:
 	const WebApiConfiguration& m_configuration;
 
 	QThreadPool m_threadPool{this};
+
+	std::atomic<int> m_pendingResponses{0};
+	std::atomic<qint64> m_lastResponseFinishedMs{0};
 
 	WebApiController* m_controller{nullptr};
 	QHttpServer* m_server{nullptr};

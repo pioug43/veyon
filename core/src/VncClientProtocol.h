@@ -137,6 +137,8 @@ private:
 								 const rfbFramebufferUpdateRectHeader rectHeader);
 	bool handleRectEncodingExtDesktopSize(QBuffer& buffer);
 
+	bool updateFramebufferSize( uint width, uint height );
+
 	static bool isPseudoEncoding( rfbFramebufferUpdateRectHeader header );
 
 	static constexpr auto MaximumMessageSize = 4096*4096*4;

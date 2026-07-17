@@ -593,17 +593,7 @@ bool VncClientProtocol::receiveResizeFramebufferMessage()
 		// Valider comme à l'init (receiveServerInitMessage) : sinon un resize réseau
 		// fixe des dimensions arbitraires (jusqu'à 65535) qui alimentent ensuite le
 		// calcul de taille de rectangle (overflow) et cassent l'invariant de taille.
-		if( newWidth == 0 || newHeight == 0 ||
-			newWidth > MaximumFramebufferDimension || newHeight > MaximumFramebufferDimension )
-		{
-			vCritical() << "invalid resized framebuffer size" << newWidth << newHeight;
-			m_socket->close();
-			return false;
-		}
-		m_framebufferWidth = newWidth;
-		m_framebufferHeight = newHeight;
-
-		return true;
+		return updateFramebufferSize( newWidth, newHeight );
 	}
 
 	return false;
@@ -718,11 +708,20 @@ bool VncClientProtocol::handleRect( QBuffer& buffer, rfbFramebufferUpdateRectHea
 		return handleRectEncodingTight(buffer, rectHeader);
 
 	case rfbEncodingExtDesktopSize:
-		return handleRectEncodingExtDesktopSize(buffer);
+		// pseudo-encoding de redimensionnement : les dimensions annoncées dans
+		// l'en-tête du rectangle deviennent la nouvelle taille du framebuffer.
+		// Sans cette mise à jour, l'extension du bureau (ajout d'un moniteur via
+		// RandR) faisait rejeter les rectangles de la zone ajoutée (« outside
+		// framebuffer ») → socket fermée → vignette/prise de main noire.
+		return updateFramebufferSize( rectHeader.r.w, rectHeader.r.h ) &&
+			handleRectEncodingExtDesktopSize( buffer );
+
+	case rfbEncodingNewFBSize:
+		// idem ExtDesktopSize, sans données supplémentaires à lire
+		return updateFramebufferSize( rectHeader.r.w, rectHeader.r.h );
 
 	case rfbEncodingPointerPos:
 	case rfbEncodingKeyboardLedState:
-	case rfbEncodingNewFBSize:
 		// no further data to read for this rect
 		return true;
 
@@ -1067,10 +1066,30 @@ bool VncClientProtocol::isPseudoEncoding( rfbFramebufferUpdateRectHeader header 
 	case rfbEncodingPointerPos:
 	case rfbEncodingKeyboardLedState:
 	case rfbEncodingNewFBSize:
+	case rfbEncodingExtDesktopSize:
 		return true;
 	default:
 		break;
 	}
 
 	return false;
+}
+
+
+
+bool VncClientProtocol::updateFramebufferSize( uint width, uint height )
+{
+	// Mêmes validations qu'à l'init (receiveServerInitMessage) : le contrôle de
+	// bornes des rectangles dépend de ces dimensions — un redimensionnement doit
+	// les actualiser (multi-écran RandR) sans jamais accepter de valeurs folles.
+	if( width == 0 || height == 0 ||
+		width > MaximumFramebufferDimension || height > MaximumFramebufferDimension )
+	{
+		vCritical() << "invalid resized framebuffer size" << width << height;
+		m_socket->close();
+		return false;
+	}
+	m_framebufferWidth = quint16( width );
+	m_framebufferHeight = quint16( height );
+	return true;
 }

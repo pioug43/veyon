@@ -22,6 +22,8 @@
  *
  */
 
+#include <algorithm>
+
 #include <QDBusReply>
 #include <QDir>
 #include <QEventLoop>
@@ -123,11 +125,36 @@ void LinuxServiceCore::connectToLoginManager()
 
 
 
+// Rang de préférence d'une session pour héberger veyon-server en mode session
+// unique. Sur un invité VDI (Omnissa Horizon), le greeter GDM (seat0, :0,
+// framebuffer vide) coexiste avec la session utilisateur (seat virtuel, :100) :
+// sans classement, le choix suivait l'ordre logind, non déterministe → portail
+// « poste injoignable (framebuffer indisponible) » selon les redémarrages.
+int LinuxServiceCore::sessionSelectionRank( const QString& sessionPath )
+{
+	switch( LinuxSessionFunctions::getSessionClass( sessionPath ) )
+	{
+	case LinuxSessionFunctions::Class::User: return 0;
+	case LinuxSessionFunctions::Class::LockScreen: return 1;
+	case LinuxSessionFunctions::Class::Greeter: return 2;
+	default: return 3;
+	}
+}
+
+
+
 void LinuxServiceCore::startServers()
 {
 	vDebug();
 
-	const auto sessions = LinuxSessionFunctions::listSessions();
+	auto sessions = LinuxSessionFunctions::listSessions();
+
+	// Tri stable par rang : la session UTILISATEUR d'abord ; le greeter (écran
+	// de connexion) seulement si personne n'est connecté.
+	std::stable_sort( sessions.begin(), sessions.end(),
+		[]( const QString& a, const QString& b ) {
+			return sessionSelectionRank( a ) < sessionSelectionRank( b );
+		} );
 
 	for( const auto& s : sessions )
 	{
@@ -195,6 +222,22 @@ void LinuxServiceCore::startServer( const QString& sessionPath )
 
 	if( m_sessionManager.mode() != PlatformSessionManager::Mode::Multi )
 	{
+		// Garde anti-préemption : ne jamais remplacer un serveur tournant sur une
+		// session MIEUX classée (ex. l'apparition du greeter GDM ne doit pas
+		// évincer la session utilisateur déjà capturée — écran vide sinon).
+		const auto candidateRank = sessionSelectionRank( sessionPath );
+		const auto runningSessions = m_serverProcesses.keys();
+		for( const auto& runningSession : runningSessions )
+		{
+			if( runningSession != sessionPath &&
+				sessionSelectionRank( runningSession ) < candidateRank )
+			{
+				vInfo() << "Not starting server for session" << sessionPath
+						<< "- a server is already running for the better ranked session" << runningSession;
+				return;
+			}
+		}
+
 		// make sure no other server is still running
 		stopAllServers();
 	}

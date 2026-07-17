@@ -370,6 +370,20 @@ void DesktopServicesFeaturePlugin::runApplicationAsUser( const QString& commandL
 	QString program;
 	QStringList parameters;
 
+#if defined(Q_OS_LINUX)
+	// Sous Linux, la « commande » transmise par le maître/portail est en réalité
+	// une LIGNE DE SHELL : elle peut contenir des guillemets, des variables
+	// ($HOME), des opérateurs (&&, |, >) — ex. le dépôt de fichiers du portail INSA
+	// envoie `bash -c 'mkdir -p "$HOME/Documents-classe" && curl … -o "$HOME/…"'`.
+	// Un découpage naïf sur les espaces casse la citation (le script mono-quoté est
+	// éclaté, `&&` devient un argument, curl n'est jamais lancé → « envoyé mais pas
+	// livré »). On exécute donc la ligne via un shell, qui gère citation et
+	// expansion dans l'environnement de l'utilisateur (HOME/DISPLAY hérités du
+	// serveur de session). C'est un lancement de programme déjà authentifié par le
+	// portail (keyfile) : aucune élévation de privilège n'est introduite.
+	program = QStringLiteral("/bin/sh");
+	parameters = { QStringLiteral("-c"), commandLine };
+#else
 	// parse command line format "C:\Program Files\..." -foo -bar
 	if( commandLine.startsWith( QLatin1Char('"') ) && commandLine.count( QLatin1Char('"') ) > 1 )
 	{
@@ -389,6 +403,7 @@ void DesktopServicesFeaturePlugin::runApplicationAsUser( const QString& commandL
 		// no arguments so use command line as program name
 		program = commandLine;
 	}
+#endif
 
 	VeyonCore::platform().coreFunctions().runProgramAsUser( program, parameters,
 															VeyonCore::platform().userFunctions().queryCurrentUserProperty(PlatformUserFunctions::UserProperty::LoginName),

@@ -60,6 +60,20 @@ static QString resolvePathToHome(const QString& path)
 }
 
 
+// La destination résolue reste-t-elle DANS le home de l'utilisateur ? Comparaison
+// sur chemins nettoyés (QDir::cleanPath résout les « .. » syntaxiquement et
+// normalise les séparateurs) : le dossier peut ne pas exister encore, donc pas de
+// canonicalFilePath. Empêche toute écriture hors du home (chemin absolu hostile ou
+// traversée « .. »), tout en autorisant un absolu légitimement situé sous le home
+// (ex. après expansion de $HOME/…).
+static bool isPathInsideHome(const QString& path)
+{
+    const auto home = QDir::cleanPath(QDir::homePath());
+    const auto clean = QDir::cleanPath(QDir::fromNativeSeparators(path));
+    return clean == home || clean.startsWith(home + QLatin1Char('/'));
+}
+
+
 FileTransferPlugin::FileTransferPlugin( QObject* parent ) :
 	QObject( parent ),
 	m_distributeFilesFeature(QStringLiteral("DistributeFiles"),
@@ -516,20 +530,27 @@ bool FileTransferPlugin::handleDistributeFilesMessage(const FeatureMessage& mess
 			if (message.hasArgument(Argument::DestinationDirectory))
 			{
 				const auto requestedDir = message.argument(Argument::DestinationDirectory).toString();
-				// Sécurité : n'accepter qu'un sous-dossier RELATIF du home, sans segment
-				// « .. » — sinon un master/WebAPI (authentifié mais potentiellement
-				// hostile) écrirait hors du home via un chemin absolu ou une traversée.
-				auto normalized = requestedDir;
-				normalized.replace( QLatin1Char('\\'), QLatin1Char('/') );
-				const bool traversal = normalized.split( QLatin1Char('/') ).contains( QStringLiteral("..") );
-				if( requestedDir.isEmpty() == false &&
-					QDir::isAbsolutePath( requestedDir ) == false && traversal == false )
+				if( requestedDir.isEmpty() == false )
 				{
-					destDir = resolvePathToHome( requestedDir );
-				}
-				else if( requestedDir.isEmpty() == false )
-				{
-					vCritical() << "refusing unsafe destination directory" << requestedDir;
+					// Le master envoie le chemin BRUT : les jetons (%HOME%/$HOME,
+					// %DOCUMENTS%, %USER%, …) doivent être expansés ICI, sur le poste,
+					// car le home dépend de l'étudiant. Même expansion que partout
+					// ailleurs dans Veyon (cf. destinationDirectory()/expandPath()).
+					const auto expanded = VeyonCore::filesystem().expandPath( requestedDir );
+					// Relatif → sous le home ; absolu (y compris après expansion de
+					// $HOME/…) → tel quel.
+					const auto resolved = resolvePathToHome( expanded );
+					// Sécurité : la destination FINALE doit rester dans le home — sinon
+					// un master/WebAPI (authentifié mais potentiellement hostile)
+					// écrirait hors du home via un chemin absolu ou une traversée « .. ».
+					if( isPathInsideHome( resolved ) )
+					{
+						destDir = resolved;
+					}
+					else
+					{
+						vCritical() << "refusing unsafe destination directory" << requestedDir;
+					}
 				}
 			}
 			if (destDir.isEmpty())

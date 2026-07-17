@@ -620,15 +620,88 @@ QString sessionEnvironmentValue( const QByteArray& name )
 }
 
 
-// Écrans PHYSIQUES du poste étudiant, rapportés par le client Horizon (nom
-// officiel avec point ; variante underscore acceptée par prudence).
+// Contrairement à la ruche registre Windows, l'agent Horizon POUR LINUX ne
+// publie PAS les ViewClient_* dans l'environnement des processus de session : il
+// écrit les informations client dans un fichier « Environment.txt » sous son
+// répertoire de logs, dès l'établissement de la session (réécrit à chaque
+// (re)connexion). C'est là que vit la topologie PHYSIQUE des écrans du poste
+// étudiant — même valeur, même format que la ruche Windows.
+//   Omnissa (actuel) : /var/log/omnissa/Environment.txt
+//   VMware (hérité)   : /var/log/vmware/Environment.txt
+// Clés utiles (fichier « Clé: valeur ») :
+//   Displays.Topology:   {w,h,x,y,bpp,primaire},{...}
+//   Displays.TopologyV2: {w,h,x,y,bpp,primaire,dpi},{...}  (repli ; 4 premiers champs identiques)
+const QStringList& vdiEnvironmentFiles()
+{
+	static const QStringList files{
+		QStringLiteral("/var/log/omnissa/Environment.txt"),
+		QStringLiteral("/var/log/vmware/Environment.txt"),
+	};
+	return files;
+}
+
+
+// Dernière valeur (occurrence la plus récente) d'une clé « Clé: valeur » dans le
+// premier fichier Environment lisible. Le fichier est un journal : une
+// reconnexion ajoute une nouvelle ligne → on garde la DERNIÈRE = session
+// courante. Le fichier est world-readable (0644) : lisible tant par le composant
+// Veyon en session que par le service root.
+QString environmentFileValue( const QByteArray& key )
+{
+	const QString prefix = QString::fromLatin1( key ) + QLatin1Char(':');
+	for( const auto& path : vdiEnvironmentFiles() )
+	{
+		QFile file( path );
+		if( file.open( QIODevice::ReadOnly ) == false )
+		{
+			continue;
+		}
+		const auto content = QString::fromUtf8( file.readAll() );
+		file.close();
+		QString value;
+		const auto lines = content.split( QLatin1Char('\n') );
+		for( const auto& line : lines )
+		{
+			// Le « : » du préfixe désambiguïse Displays.Topology de
+			// Displays.TopologyV2/V3.
+			if( line.startsWith( prefix ) )
+			{
+				value = line.mid( prefix.size() ).trimmed();
+			}
+		}
+		if( value.isEmpty() == false )
+		{
+			return value;
+		}
+	}
+	return {};
+}
+
+
+// Écrans PHYSIQUES du poste étudiant, rapportés par le client Horizon.
 QVector<Rect> readClientPhysicalTopologyLinux()
 {
-	static const QByteArray names[]{
+	// 1) Source réelle sous Linux : fichier Environment de l'agent Horizon.
+	static const QByteArray fileKeys[]{
+		QByteArrayLiteral("Displays.Topology"),
+		QByteArrayLiteral("Displays.TopologyV2"),
+	};
+	for( const auto& key : fileKeys )
+	{
+		const auto rects = parsePhysicalTopology( environmentFileValue( key ) );
+		if( rects.isEmpty() == false )
+		{
+			return rects;
+		}
+	}
+	// 2) Repli : variables ViewClient_* dans l'environnement de session (nom
+	//    officiel avec point ; variante underscore par prudence). Conservé pour
+	//    d'éventuelles versions d'agent qui les exporteraient.
+	static const QByteArray envNames[]{
 		QByteArrayLiteral("ViewClient_Displays.Topology"),
 		QByteArrayLiteral("ViewClient_Displays_Topology"),
 	};
-	for( const auto& name : names )
+	for( const auto& name : envNames )
 	{
 		const auto rects = parsePhysicalTopology( sessionEnvironmentValue( name ) );
 		if( rects.isEmpty() == false )

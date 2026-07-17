@@ -33,8 +33,10 @@
 // affiche RÉELLEMENT ; couverture partielle = hôte accessible = NotFullscreen.
 //   Windows : registre agent (SessionData + Blast\Telemetry, repli
 //             EnumDisplayMonitors), lisible par le service SYSTEM.
-//   Linux   : environnement de session ViewClient_* (/proc/<pid>/environ) +
-//             XRandR (repli : étendue de l'écran X).
+//   Linux   : fichier Environment de l'agent Horizon
+//             (/var/log/omnissa/Environment.txt, clé Displays.Topology ; repli
+//             environnement de session ViewClient_*) pour les écrans physiques,
+//             + XRandR pour la topologie courante (repli : étendue de l'écran X).
 // Sur poste PHYSIQUE Linux (client local), détection fenêtre X11/EWMH + forçage
 // plein écran par requête EWMH (voir la note dans le .cpp).
 namespace ExamModeVdiClient

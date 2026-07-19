@@ -23,6 +23,7 @@
  */
 
 #include <QHostAddress>
+#include <QTcpSocket>
 #include <QTimer>
 #include <QUrlQuery>
 #include <QUuid>
@@ -86,6 +87,16 @@ void WebApiWebSocketServer::onNewConnection()
 		if( socket == nullptr )
 		{
 			break;
+		}
+
+		// TCP_NODELAY sur le socket sous-jacent : sans lui, Nagle retient les
+		// petites trames (curseur, petits rects) jusqu'à l'ACK précédent —
+		// jusqu'à ~40 ms de latence ajoutée par mise à jour interactive.
+		// QWebSocket n'expose pas le QTcpSocket : on le retrouve en enfant
+		// (best-effort, sans effet si l'implémentation Qt change).
+		if( auto* tcpSocket = socket->findChild<QTcpSocket*>() )
+		{
+			tcpSocket->setSocketOption( QAbstractSocket::LowDelayOption, 1 );
 		}
 
 		const QUrlQuery query( socket->requestUrl().query() );

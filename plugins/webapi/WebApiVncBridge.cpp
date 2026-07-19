@@ -593,6 +593,9 @@ void WebApiVncBridge::trySendFramebufferUpdate()
 	message += rectsData;
 
 	m_socket->sendBinaryMessage( message );
+	// pousse la trame sur le fil sans attendre le retour à la boucle
+	// d'évènements — chaque milliseconde compte sur le chemin interactif
+	m_socket->flush();
 
 	const QRect cursor = cursorRect();
 	if( region.intersects( cursor ) || ( cursor.isEmpty() == false && m_forceFullUpdate ) )

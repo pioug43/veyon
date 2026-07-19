@@ -67,6 +67,20 @@ public:
 
 	QByteArray encodedFramebufferData( QSize size, const QByteArray& format, int compression, int quality );
 
+	// Prise en main navigateur : mémorise la dernière requête framebuffer
+	// « live » — sert à redescendre la connexion en mode Basic quand le
+	// contrôle s'arrête (les vignettes continuent d'utiliser le même uid).
+	void markLiveFramebufferRequest()
+	{
+		m_lastLiveFramebufferTimer.start();
+	}
+
+	bool liveFramebufferRequestExpired() const
+	{
+		return m_lastLiveFramebufferTimer.isValid() == false ||
+			   m_lastLiveFramebufferTimer.elapsed() > 10000;
+	}
+
 	const QString& framebufferEncodingError() const
 	{
 		return m_encodingError;
@@ -103,6 +117,7 @@ private:
 	QString m_encodingError;
 
 	QElapsedTimer m_lastFramebufferRequestTimer;
+	QElapsedTimer m_lastLiveFramebufferTimer;
 	qint64 m_lastFramebufferRequestInterval{0};
 	QAtomicInteger<qint64> m_framebufferEncodingTime{0};
 

@@ -344,6 +344,30 @@ WebApiController::Response WebApiController::getFramebuffer( const Request& requ
 
 	m_framebufferRequestsCounter++;
 
+	// Prise en main navigateur (?live=1) : mises à jour VNC CONTINUES et
+	// qualité « remote access » au lieu du mode Basic (intervalle monitoring,
+	// qualité basse) — sinon les zones rafraîchies arrivent dégradées et se
+	// mélangent aux zones anciennes (artefacts « sprites »). Quand le contrôle
+	// s'arrête (plus de requête live depuis >10 s), la première requête
+	// vignette redescend la connexion en Basic — le poste ne diffuse pas en
+	// continu pour de simples miniatures.
+	{
+		const auto controlInterface = connection->controlInterface();
+		if( request.data[k2s(Key::Live)].toString().toInt() > 0 )
+		{
+			connection->markLiveFramebufferRequest();
+			if( controlInterface->updateMode() != ComputerControlInterface::UpdateMode::Live )
+			{
+				runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
+			}
+		}
+		else if( controlInterface->updateMode() == ComputerControlInterface::UpdateMode::Live &&
+				 connection->liveFramebufferRequestExpired() )
+		{
+			runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Basic); });
+		}
+	}
+
 	const auto width = request.data[k2s(Key::Width)].toInt();
 	const auto height = request.data[k2s(Key::Height)].toInt();
 	const auto size = connection->scaledFramebufferSize( width, height );

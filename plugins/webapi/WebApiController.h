@@ -50,6 +50,7 @@ public:
 		Quality,
 		Width,
 		Height,
+		Live,
 		Feature,
 		Name,
 		DisplayName,

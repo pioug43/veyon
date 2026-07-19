@@ -70,15 +70,30 @@ public:
 	// Prise en main navigateur : mémorise la dernière requête framebuffer
 	// « live » — sert à redescendre la connexion en mode Basic quand le
 	// contrôle s'arrête (les vignettes continuent d'utiliser le même uid).
+	// m_liveModePromoted : la rétrogradation ne s'applique QUE si c'est ce
+	// polling qui a promu le mode Live — jamais quand la promotion vient du
+	// pont noVNC (WebApiVncBridge) ou des évènements d'entrée, sinon une
+	// simple vignette casserait la fluidité d'une session noVNC en cours.
 	void markLiveFramebufferRequest()
 	{
 		m_lastLiveFramebufferTimer.start();
+		m_liveModePromoted = true;
 	}
 
 	bool liveFramebufferRequestExpired() const
 	{
 		return m_lastLiveFramebufferTimer.isValid() == false ||
 			   m_lastLiveFramebufferTimer.elapsed() > 10000;
+	}
+
+	bool liveModePromotedByFramebuffer() const
+	{
+		return m_liveModePromoted;
+	}
+
+	void clearLiveModePromotion()
+	{
+		m_liveModePromoted = false;
 	}
 
 	const QString& framebufferEncodingError() const
@@ -118,6 +133,7 @@ private:
 
 	QElapsedTimer m_lastFramebufferRequestTimer;
 	QElapsedTimer m_lastLiveFramebufferTimer;
+	bool m_liveModePromoted{false};
 	qint64 m_lastFramebufferRequestInterval{0};
 	QAtomicInteger<qint64> m_framebufferEncodingTime{0};
 

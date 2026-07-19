@@ -361,9 +361,11 @@ WebApiController::Response WebApiController::getFramebuffer( const Request& requ
 				runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
 			}
 		}
-		else if( controlInterface->updateMode() == ComputerControlInterface::UpdateMode::Live &&
+		else if( connection->liveModePromotedByFramebuffer() &&
+				 controlInterface->updateMode() == ComputerControlInterface::UpdateMode::Live &&
 				 connection->liveFramebufferRequestExpired() )
 		{
+			connection->clearLiveModePromotion();
 			runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Basic); });
 		}
 	}

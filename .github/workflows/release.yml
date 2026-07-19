@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  packages: read
 
 jobs:
   test-ubuntu:
@@ -56,3 +57,35 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: veyon*
+
+  # Installeur Windows des POSTES (avec le plugin exammode) : même recette que
+  # windows-build.yml (déclenchement manuel conservé pour itérer), chaîné ici
+  # pour que chaque release embarque son veyon-*-win64-setup.exe — il était
+  # sinon oublié/attaché à la main (cf. v4.11.18 et antérieures).
+  build-windows:
+    needs: test-ubuntu
+    runs-on: ubuntu-latest
+    env:
+      # MXE ne fournit ni OpenLDAP (auth keyfile sur les postes, LDAP reste sur
+      # le broker Linux) ni LibVNCServer (copie bundled du sous-module).
+      CMAKE_FLAGS: -DWITH_LDAP=OFF -DWITH_BUNDLED_LIBVNC=ON
+      CI_COMMIT_TAG: ${{ github.ref_name }}
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/veyon-ci-windows:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - run: git config --global --add safe.directory $GITHUB_WORKSPACE
+      - run: .ci/windows/build.sh x86_64 create-windows-installer
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-installer
+          path: veyon-*setup.exe
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: veyon-*setup.exe

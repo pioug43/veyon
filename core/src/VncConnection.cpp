@@ -860,7 +860,15 @@ void VncConnection::updateEncodingSettingsFromQuality()
 											"zrle ultra copyrect hextile zlib corre rre raw" :
 											"tight zywrle zrle ultra";
 
-	m_client->appData.compressLevel = 9;
+	// Niveau de compression zlib annoncé au serveur du poste :
+	// — Highest = chemin INTERACTIF (mode Live, prise en main) : la latence
+	//   est bornée par le CPU d'encodage du poste, pas par la bande passante
+	//   du LAN — niveau 1, plusieurs fois plus rapide à encoder pour une
+	//   sortie à peine plus volumineuse ;
+	// — qualités monitoring (vignettes de N postes agrégées) : niveau 9,
+	//   la bande passante prime sur la fraîcheur.
+	m_client->appData.compressLevel =
+		m_quality == VncConnectionConfiguration::Quality::Highest ? 1 : 9;
 
 	m_client->appData.qualityLevel = [this] {
 		switch(m_quality)

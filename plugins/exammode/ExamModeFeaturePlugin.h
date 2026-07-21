@@ -75,6 +75,8 @@ public:
 		AllowedNetworks,	// QStringList : CIDR autorisés en sortie (backend firewall)
 		DnsServers,			// QStringList : résolveurs DNS autorisés (backend firewall)
 		SupervisionNetworks,// QStringList : CIDR portail/master toujours autorisés
+		BlockUsb,			// bool : bloque le stockage USB du poste pendant l'examen
+		FullscreenGraceSeconds,	// int : délai de grâce plein écran à l'activation (défaut 60 s)
 		SessionId,			// QString : identifiant opaque de session d'examen
 		Sequence,			// quint64 : compteur strictement croissant (anti-rejeu)
 		IssuedAt,			// qint64 : epoch millisecondes
@@ -161,7 +163,9 @@ private:
 						   const QString& defaultUrlAction, int leaseSeconds, const QString& profileId,
 						   qint64 profileRevision, const QString& expectedDigest,
 						   const ExamModeProfile::NetworkPolicy& networkPolicy,
-						   const ExamModeSession::Envelope& envelope );
+						   const ExamModeSession::Envelope& envelope,
+						   bool blockUsb = false,
+						   int fullscreenGraceSeconds = DefaultFullscreenGraceSeconds );
 	void stopEnforcement();
 	bool stopEnforcement( const ExamModeSession::Envelope& envelope );
 	void enforceTick();				// termine périodiquement les processus interdits
@@ -208,6 +212,14 @@ private:
 	static bool regRestore( const QString& key, const QString& name, const QJsonObject& previous,
 						const QJsonObject& expected = {} );
 #endif
+
+	// Blocage du stockage USB (Windows : USBSTOR Start=4 + politique
+	// RemovableStorageDevices Deny_All=1, transactionnel avec restauration des
+	// valeurs antérieures). Sans effet sur les autres plateformes (UNSUPPORTED).
+	bool applyUsbBlocking();
+	void removeUsbBlocking();
+	void cleanupStaleUsbBlocking();		// au démarrage : retire un blocage résiduel (crash)
+	static QString usbBlockingStateFile();
 
 	// Empêchement du LANCEMENT des logiciels interdits (Windows : Image File
 	// Execution Options). Le kill périodique reste en complément (instances déjà
@@ -286,11 +298,16 @@ private:
 	bool m_siteFilteringActive{false};
 	QString m_hostsSignature{};		// évite de réappliquer le filtrage réseau si la politique est inchangée
 	QString m_appsSignature{};		// évite de réappliquer IFEO si la liste est inchangée
+	bool m_blockUsb{false};			// blocage USB demandé par le profil
+	bool m_usbBlockingActive{false};	// blocage USB effectivement appliqué (Windows)
 
 	// délimiteurs de notre section dans le fichier hosts (retrait propre au stop)
 	static constexpr auto HostsMarkerBegin = "# >>> Veyon ExamMode >>>";
 	static constexpr auto HostsMarkerEnd = "# <<< Veyon ExamMode <<<";
 
 	// Délai laissé à l'étudiant pour se mettre en plein écran à l'activation.
-	static constexpr int FullscreenGraceSeconds = 60;
+	// Configurable par le portail (Argument::FullscreenGraceSeconds), borné.
+	static constexpr int DefaultFullscreenGraceSeconds = 60;
+	static constexpr int MaxFullscreenGraceSeconds = 600;
+	int m_fullscreenGraceSeconds{DefaultFullscreenGraceSeconds};
 };

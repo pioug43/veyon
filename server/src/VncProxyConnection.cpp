@@ -370,5 +370,16 @@ void VncProxyConnection::updateHandshakeState()
 		clientProtocol().state() == VncClientProtocol::Running )
 	{
 		m_handshakeTimer.stop();
+
+		// Handshake terminé des deux côtés : le flux RFB est à une frontière de
+		// message, on peut pousser immédiatement les messages de fonctionnalité
+		// asynchrones (état du mode examen, features actives…) au lieu d'attendre
+		// la première trame serveur — un client fraîchement connecté (broker
+		// webapi) obtenait sinon « UNKNOWN » jusqu'au premier framebuffer update.
+		if( m_connectionEstablishedEmitted == false )
+		{
+			m_connectionEstablishedEmitted = true;
+			Q_EMIT connectionEstablished();
+		}
 	}
 }

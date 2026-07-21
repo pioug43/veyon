@@ -63,6 +63,11 @@ ComputerControlServer::ComputerControlServer( QObject* parent ) :
 
 	connect(&m_vncProxyServer, &VncProxyServer::serverMessageProcessed,
 			 this, &ComputerControlServer::sendAsyncFeatureMessages, Qt::DirectConnection);
+	// Dès la fin du handshake (frontière de message RFB sûre) : pousser l'état
+	// courant (mode examen, features actives) sans attendre la première trame,
+	// pour qu'une connexion fraîche du broker webapi ne lise pas « UNKNOWN ».
+	connect(&m_vncProxyServer, &VncProxyServer::connectionEstablished,
+			 this, &ComputerControlServer::sendAsyncFeatureMessages, Qt::DirectConnection);
 	connect( &m_vncProxyServer, &VncProxyServer::connectionClosed, this, &ComputerControlServer::updateTrayIconToolTip );
 }
 

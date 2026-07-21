@@ -148,6 +148,7 @@ ExamModeFeaturePlugin::ExamModeFeaturePlugin( QObject* parent ) :
 			flushDnsCache();
 		}
 		cleanupStaleLaunchPrevention();
+		cleanupStaleUsbBlocking();
 #if defined(Q_OS_WIN)
 		cleanupLegacyWindowsState();
 		if( QFile::exists( siteFilterStateFile() ) )
@@ -228,6 +229,9 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 		const auto requiredCapabilities = arguments.value( argToString( Argument::RequiredCapabilities ) ).toStringList();
 		const auto externalCapabilities = arguments.value( argToString( Argument::ExternalCapabilities ) ).toMap();
 		const auto signingKeyId = arguments.value( argToString( Argument::SigningKeyId ) ).toString();
+		const auto blockUsb = arguments.value( argToString( Argument::BlockUsb ) ).toBool();
+		const auto fullscreenGraceSeconds = arguments.value( argToString( Argument::FullscreenGraceSeconds ),
+															 DefaultFullscreenGraceSeconds ).toInt();
 		// TOUJOURS convertir vers un type concret : un QVariant invalide (clé
 		// absente) sérialisé dans le FeatureMessage fait rejeter la map entière
 		// par VariantStream::checkVariant sur les postes non patchés.
@@ -252,6 +256,8 @@ bool ExamModeFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation o
 							.addArgument( Argument::AllowedNetworks, allowedNetworks )
 							.addArgument( Argument::DnsServers, dnsServers )
 							.addArgument( Argument::SupervisionNetworks, supervisionNetworks )
+							.addArgument( Argument::BlockUsb, blockUsb )
+							.addArgument( Argument::FullscreenGraceSeconds, fullscreenGraceSeconds )
 							.addArgument( Argument::SessionId, sessionId )
 							.addArgument( Argument::Sequence, static_cast<qlonglong>( sequence ) )
 							.addArgument( Argument::IssuedAt, issuedAt )
@@ -436,7 +442,11 @@ bool ExamModeFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 					message.argument( Argument::LeaseSeconds ).toInt() : DefaultLeaseSeconds,
 				message.argument( Argument::ProfileId ).toString(),
 				message.argument( Argument::ProfileRevision ).toLongLong(),
-				message.argument( Argument::ProfileDigest ).toString(), networkPolicy, envelope ) == false )
+				message.argument( Argument::ProfileDigest ).toString(), networkPolicy, envelope,
+				message.argument( Argument::BlockUsb ).toBool(),
+				message.hasArgument( Argument::FullscreenGraceSeconds ) ?
+					message.argument( Argument::FullscreenGraceSeconds ).toInt() :
+					DefaultFullscreenGraceSeconds ) == false )
 		{
 			vWarning() << "ExamMode: profil StartExam refusé — restrictions inchangées";
 		}
@@ -716,7 +726,8 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 											  const QString& sitesMode, const QString& defaultUrlAction, int leaseSeconds,
 											  const QString& profileId, qint64 profileRevision, const QString& expectedDigest,
 											  const ExamModeProfile::NetworkPolicy& networkPolicy,
-											  const ExamModeSession::Envelope& envelope )
+											  const ExamModeSession::Envelope& envelope,
+											  bool blockUsb, int fullscreenGraceSeconds )
 {
 	ExamModeProfile::ProcessPolicy normalizedProcessPolicy{
 		ExamModeProfile::normalizeApplications( processPolicy.terminateApplications ),
@@ -878,6 +889,9 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		quint64 sequence;
 		qint64 expiresAt;
 		bool highSecurity;
+		bool blockUsb;
+		bool usbBlockingActive;
+		int fullscreenGraceSeconds;
 	};
 	const Snapshot previous{
 		m_active, m_blockedApps, m_launchPreventedApps, m_sites, m_urlRules, m_sitesMode,
@@ -885,7 +899,8 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		{ m_networkBackend, m_allowedNetworks, m_dnsServers, m_supervisionNetworks },
 		m_profileId, m_profileRevision, m_profileDigest, m_leaseSeconds, m_hostsSignature,
 		m_appsSignature, m_siteFilteringActive, m_sessionId, m_lastSequence,
-		m_sessionExpiresAtMs, m_highSecurity,
+		m_sessionExpiresAtMs, m_highSecurity, m_blockUsb, m_usbBlockingActive,
+		m_fullscreenGraceSeconds,
 	};
 
 	m_blockedApps = normalizedProcessPolicy.terminateApplications;
@@ -900,6 +915,10 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 	m_dnsServers = networkPolicy.dnsServers;
 	m_supervisionNetworks = networkPolicy.supervisionNetworks;
 	m_leaseSeconds = normalizedLeaseSeconds;
+	m_blockUsb = blockUsb;
+	m_fullscreenGraceSeconds = qBound( 0,
+		fullscreenGraceSeconds >= 0 ? fullscreenGraceSeconds : DefaultFullscreenGraceSeconds,
+		MaxFullscreenGraceSeconds );
 	m_profileId = normalizedProfileId;
 	m_profileRevision = profileRevision;
 	m_profileDigest = digest;
@@ -964,6 +983,24 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		}
 	}
 
+	// Blocage USB : appliqué/levé uniquement quand la demande change (les
+	// re-push périodiques du portail sont idempotents). Windows uniquement ;
+	// ailleurs, applyUsbBlocking est un no-op signalé UNSUPPORTED plus bas.
+	bool usbTouched = false;
+	bool usbApplied = true;
+	if( m_blockUsb != previous.blockUsb || previous.active == false )
+	{
+		usbTouched = true;
+		if( m_blockUsb )
+		{
+			usbApplied = applyUsbBlocking();
+		}
+		else
+		{
+			removeUsbBlocking();
+		}
+	}
+
 	bool deadManArmed = true;
 	if( m_networkBackend == ExamModeProfile::NetworkBackend::Firewall && m_siteFilteringActive )
 	{
@@ -972,11 +1009,14 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 #endif
 	}
 
-	if( ( networkRequired && m_siteFilteringActive == false ) || launchApplied == false || deadManArmed == false )
+	if( ( networkRequired && m_siteFilteringActive == false ) || launchApplied == false ||
+		usbApplied == false || deadManArmed == false )
 	{
 		const auto failureCode = deadManArmed == false ? QStringLiteral("DEADMAN_UNAVAILABLE") :
 			launchApplied == false ? QStringLiteral("LAUNCH_PREVENTION_FAILED") :
+			usbApplied == false ? QStringLiteral("USB_ENFORCEMENT_FAILED") :
 			QStringLiteral("NETWORK_ENFORCEMENT_FAILED");
+		if( usbTouched ) { removeUsbBlocking(); }
 		if( launchTouched ) { removeLaunchPrevention(); }
 		if( networkTouched ) { removeSiteFiltering(); }
 
@@ -1003,6 +1043,9 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		m_hostsSignature = previous.hostsSignature;
 		m_appsSignature = previous.appsSignature;
 		m_siteFilteringActive = previous.siteFilteringActive;
+		m_blockUsb = previous.blockUsb;
+		m_usbBlockingActive = previous.usbBlockingActive;
+		m_fullscreenGraceSeconds = previous.fullscreenGraceSeconds;
 
 		bool restored = true;
 		if( previous.active && networkTouched )
@@ -1014,6 +1057,10 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		if( previous.active && launchTouched )
 		{
 			restored = applyLaunchPrevention( m_launchPreventedApps ) && restored;
+		}
+		if( previous.active && usbTouched && previous.blockUsb )
+		{
+			restored = applyUsbBlocking() && restored;
 		}
 		if( restored == false )
 		{
@@ -1131,6 +1178,8 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 		{ QStringLiteral("network"), networkRequired ? QStringLiteral("APPLIED") : QStringLiteral("NOT_REQUESTED") },
 		{ QStringLiteral("launchPrevention"), m_launchPreventedApps.isEmpty() ?
 			QStringLiteral("NOT_REQUESTED") : QStringLiteral("APPLIED") },
+		{ QStringLiteral("usb"), m_blockUsb == false ? QStringLiteral("NOT_REQUESTED") :
+			m_usbBlockingActive ? QStringLiteral("APPLIED") : QStringLiteral("UNSUPPORTED") },
 		{ QStringLiteral("deadMan"), m_networkBackend == ExamModeProfile::NetworkBackend::Firewall ?
 			QStringLiteral("ARMED") : QStringLiteral("NOT_REQUIRED") },
 	};
@@ -1157,7 +1206,7 @@ bool ExamModeFeaturePlugin::startEnforcement( const ExamModeProfile::ProcessPoli
 			if( ExamModeVdiClient::fullscreenState() != ExamModeVdiClient::State::Fullscreen )
 			{
 				m_fullscreenGraceUntilMs = QDateTime::currentMSecsSinceEpoch() +
-					static_cast<qint64>( FullscreenGraceSeconds ) * 1000;
+					static_cast<qint64>( m_fullscreenGraceSeconds ) * 1000;
 			}
 		}
 	}
@@ -1197,6 +1246,9 @@ void ExamModeFeaturePlugin::stopEnforcement()
 	}
 	removeLaunchPrevention();
 	removeSiteFiltering();
+	removeUsbBlocking();
+	m_blockUsb = false;
+	m_fullscreenGraceSeconds = DefaultFullscreenGraceSeconds;
 	m_blockedApps.clear();
 	m_launchPreventedApps.clear();
 	m_sites.clear();
@@ -1346,6 +1398,12 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 		}
 	}
 
+	bool usbHealthy = true;
+#if defined(Q_OS_WIN)
+	usbHealthy = m_usbBlockingActive == false ||
+		registryStateHealthy( usbBlockingStateFile(), QStringLiteral("usbBlocking") );
+#endif
+
 	bool launchHealthy = true;
 #if defined(Q_OS_WIN)
 	launchHealthy = m_launchPreventedApps.isEmpty() ||
@@ -1361,7 +1419,7 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 		};
 	}
 #endif
-	if( networkHealthy && launchHealthy )
+	if( networkHealthy && launchHealthy && usbHealthy )
 	{
 		return true;
 	}
@@ -1387,6 +1445,12 @@ bool ExamModeFeaturePlugin::verifyEnforcement()
 		m_appsSignature.clear();
 		repaired = applyLaunchPrevention( m_launchPreventedApps ) && repaired;
 #endif
+	}
+	if( usbHealthy == false )
+	{
+		// Comme IFEO : une dérive registre peut être une GPO tierce — restauration
+		// conservatrice, jamais d'écrasement automatique.
+		repaired = false;
 	}
 	if( repaired )
 	{
@@ -1494,6 +1558,8 @@ void ExamModeFeaturePlugin::persistActiveState() const
 		{ QStringLiteral("profileRevision"), QString::number( m_profileRevision ) },
 		{ QStringLiteral("profileDigest"), m_profileDigest },
 		{ QStringLiteral("leaseSeconds"), m_leaseSeconds },
+		{ QStringLiteral("blockUsb"), m_blockUsb },
+		{ QStringLiteral("fullscreenGraceSeconds"), m_fullscreenGraceSeconds },
 		{ QStringLiteral("sessionId"), m_sessionId },
 		{ QStringLiteral("lastSequence"), QString::number( m_lastSequence ) },
 		{ QStringLiteral("expiresAtMs"), QString::number( m_sessionExpiresAtMs ) },
@@ -1569,7 +1635,10 @@ void ExamModeFeaturePlugin::recoverActiveState()
 		state.value( QStringLiteral("leaseSeconds") ).toInt(),
 		state.value( QStringLiteral("profileId") ).toString(),
 		state.value( QStringLiteral("profileRevision") ).toString().toLongLong(),
-		state.value( QStringLiteral("profileDigest") ).toString(), networkPolicy, {} );
+		state.value( QStringLiteral("profileDigest") ).toString(), networkPolicy, {},
+		state.value( QStringLiteral("blockUsb") ).toBool(),
+		state.contains( QStringLiteral("fullscreenGraceSeconds") ) ?
+			state.value( QStringLiteral("fullscreenGraceSeconds") ).toInt() : DefaultFullscreenGraceSeconds );
 	if( recovered == false )
 	{
 		stopEnforcement();
@@ -2303,6 +2372,163 @@ void ExamModeFeaturePlugin::cleanupStaleLaunchPrevention()
 	{
 		vInfo() << "ExamMode: restauration d'un blocage de lancement résiduel";
 		removeLaunchPrevention();
+	}
+#endif
+}
+
+
+
+/** Fichier d'état : valeurs registre antérieures au blocage USB (nettoyage anti-crash). */
+QString ExamModeFeaturePlugin::usbBlockingStateFile()
+{
+#if defined(Q_OS_WIN)
+	return QStringLiteral("C:/ProgramData/Veyon/exammode-usb-state.json");
+#else
+	return QStringLiteral("/var/lib/veyon/exammode-usb-state.json");
+#endif
+}
+
+
+
+/**
+ * Bloque le stockage USB du poste pendant l'examen (Windows) :
+ *  - HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR!Start = 4 → le pilote de
+ *    stockage de masse ne se charge plus (toute clé branchée ensuite est inerte) ;
+ *  - HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices!Deny_All = 1
+ *    → refus d'accès aux périphériques amovibles déjà montés (politique lue en
+ *    continu par l'Explorateur, sans redémarrage).
+ * Transactionnel comme l'IFEO : valeurs antérieures sauvegardées dans un fichier
+ * d'état pour restauration exacte au stop et après crash. Restauration
+ * ownership-aware (regRestore vérifie que la valeur est encore la nôtre — une
+ * GPO tierce ne sera jamais écrasée).
+ * Sur les autres plateformes : no-op signalé UNSUPPORTED dans backendResults
+ * (sur les pools Linux, la redirection USB se gouverne dans Horizon/l'image).
+ */
+bool ExamModeFeaturePlugin::applyUsbBlocking()
+{
+#if defined(Q_OS_WIN)
+	if( m_usbBlockingActive && QFile::exists( usbBlockingStateFile() ) )
+	{
+		return true;	// re-push idempotent : déjà appliqué
+	}
+	removeUsbBlocking();	// restaure d'abord un état antérieur éventuel
+	if( QFile::exists( usbBlockingStateFile() ) )
+	{
+		vWarning() << "ExamMode: restauration USB précédente incomplète; nouveau blocage refusé";
+		return false;
+	}
+
+	struct UsbPolicy { QString key; QString name; QString data; };
+	const QList<UsbPolicy> policies{
+		{ QStringLiteral("HKLM\\SYSTEM\\CurrentControlSet\\Services\\USBSTOR"),
+			QStringLiteral("Start"), QStringLiteral("4") },
+		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\RemovableStorageDevices"),
+			QStringLiteral("Deny_All"), QStringLiteral("1") },
+	};
+
+	QJsonArray entries;
+	for( const auto& policy : policies )
+	{
+		const auto previous = regRead( policy.key, policy.name );
+		if( previous[QStringLiteral("ok")].toBool() == false )
+		{
+			vWarning() << "ExamMode: sauvegarde registre USB impossible; transaction refusée" << policy.key;
+			return false;
+		}
+		entries.append( QJsonObject{
+			{ QStringLiteral("key"), policy.key },
+			{ QStringLiteral("name"), policy.name },
+			{ QStringLiteral("previous"), previous },
+			{ QStringLiteral("expected"), QJsonObject{
+				{ QStringLiteral("exists"), true }, { QStringLiteral("type"), QStringLiteral("REG_DWORD") },
+				{ QStringLiteral("data"), policy.data },
+			} },
+		} );
+	}
+
+	if( writeJsonFile( usbBlockingStateFile(), QJsonObject{
+		{ QStringLiteral("version"), 1 }, { QStringLiteral("entries"), entries } } ) == false )
+	{
+		vWarning() << "ExamMode: impossible de sauvegarder l'état USB; blocage annulé";
+		return false;
+	}
+
+	bool success = true;
+	for( const auto& value : entries )
+	{
+		const auto entry = value.toObject();
+		const auto expected = entry[QStringLiteral("expected")].toObject();
+		success = regSet( entry[QStringLiteral("key")].toString(), entry[QStringLiteral("name")].toString(),
+			QStringLiteral("REG_DWORD"), expected[QStringLiteral("data")].toString() ) && success;
+	}
+	if( success == false )
+	{
+		removeUsbBlocking();
+		return false;
+	}
+	m_usbBlockingActive = true;
+	vInfo() << "ExamMode: stockage USB bloqué (USBSTOR + RemovableStorageDevices)";
+	return true;
+#else
+	// Pas de backend USB hors Windows : succès « mou » signalé UNSUPPORTED dans
+	// backendResults (le portail sait que le poste n'a pas appliqué le blocage).
+	m_usbBlockingActive = false;
+	if( m_blockUsb )
+	{
+		vWarning() << "ExamMode: blocage USB non pris en charge sur cette plateforme";
+	}
+	return true;
+#endif
+}
+
+
+
+/** Lève le blocage USB (restaure les valeurs registre antérieures) et supprime le fichier d'état. */
+void ExamModeFeaturePlugin::removeUsbBlocking()
+{
+	m_usbBlockingActive = false;
+#if defined(Q_OS_WIN)
+	if( QFile::exists( usbBlockingStateFile() ) == false )
+	{
+		return;
+	}
+	const auto state = readJsonFile( usbBlockingStateFile() );
+	const auto entries = state[QStringLiteral("entries")].toArray();
+	if( entries.isEmpty() )
+	{
+		vWarning() << "ExamMode: état USB illisible; conservation du fichier pour diagnostic";
+		return;
+	}
+
+	bool success = true;
+	for( const auto& value : entries )
+	{
+		const auto entry = value.toObject();
+		success = regRestore( entry[QStringLiteral("key")].toString(), entry[QStringLiteral("name")].toString(),
+			entry[QStringLiteral("previous")].toObject(), entry[QStringLiteral("expected")].toObject() ) && success;
+	}
+	if( success )
+	{
+		QFile::remove( usbBlockingStateFile() );
+		vInfo() << "ExamMode: blocage USB levé";
+	}
+	else
+	{
+		vWarning() << "ExamMode: restauration USB incomplète; elle sera retentée au prochain démarrage";
+	}
+#endif
+}
+
+
+
+/** Au démarrage du service : retire un blocage USB laissé par un crash. */
+void ExamModeFeaturePlugin::cleanupStaleUsbBlocking()
+{
+#if defined(Q_OS_WIN)
+	if( QFile::exists( usbBlockingStateFile() ) )
+	{
+		vInfo() << "ExamMode: restauration d'un blocage USB résiduel";
+		removeUsbBlocking();
 	}
 #endif
 }

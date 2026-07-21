@@ -23,6 +23,8 @@ restores its previous system state automatically when the lease expires.
 | `profileRevision` | non-negative integer | Monotonic revision within a profile identity |
 | `profileDigest` | SHA-256 hex string | Optional expected digest of the normalized effective profile |
 | `strict` | boolean | Opt-in: also block shells, interpreters, and system tools (see below); default `false` |
+| `blockUsb` | boolean | Windows: disable USB mass storage (`USBSTOR` start + `RemovableStorageDevices` deny policy), transactional restore on stop/crash; other platforms report `usb: UNSUPPORTED`; default `false` |
+| `fullscreenGraceSeconds` | integer | Grace period before a non-fullscreen VDI client is reported, clamped to 0–600; default 60 |
 | `networkBackend` | `hosts` or `firewall` | Network enforcement backend (Linux `hosts`/nftables; Windows `firewall` is explicitly refused until WFP support); default `hosts` |
 | `allowedNetworks` | string list | CIDR/IP allowed for egress (firewall backend) |
 | `dnsServers` | string list | DNS resolver IPs allowed through the firewall |

@@ -4481,6 +4481,52 @@ Exemple : [^-]*-(ORD[0-9]*)</translation>
     </message>
 </context>
 <context>
+    <name>SurveyPlugin</name>
+    <message>
+        <source>Survey</source>
+        <translation>Sondage</translation>
+    </message>
+    <message>
+        <source>Stop survey</source>
+        <translation>Arrêter le sondage</translation>
+    </message>
+    <message>
+        <source>Send a question to the users of the selected computers and collect their answers.</source>
+        <translation>Envoyer une question aux utilisateurs des ordinateurs sélectionnés et recueillir leurs réponses.</translation>
+    </message>
+    <message>
+        <source>Send a question to users and collect their answers</source>
+        <translation>Envoyer une question aux utilisateurs et recueillir leurs réponses</translation>
+    </message>
+</context>
+<context>
+    <name>SurveyStudentDialog</name>
+    <message>
+        <source>Survey</source>
+        <translation>Sondage</translation>
+    </message>
+    <message>
+        <source>Submit</source>
+        <translation>Envoyer</translation>
+    </message>
+    <message>
+        <source>True</source>
+        <translation>Vrai</translation>
+    </message>
+    <message>
+        <source>False</source>
+        <translation>Faux</translation>
+    </message>
+    <message>
+        <source>Please select or enter an answer first.</source>
+        <translation>Veuillez d&apos;abord sélectionner ou saisir une réponse.</translation>
+    </message>
+    <message>
+        <source>Your answer has been submitted.</source>
+        <translation>Votre réponse a bien été envoyée.</translation>
+    </message>
+</context>
+<context>
     <name>TextMessageDialog</name>
     <message>
         <source>Send text message</source>

@@ -30,10 +30,11 @@
 #include <QWindow>
 
 
-LockWidget::LockWidget( Mode mode, const QPixmap& background, QWidget* parent ) :
+LockWidget::LockWidget( Mode mode, const QPixmap& background, const QString& customMessage, QWidget* parent ) :
 	QWidget( parent, Qt::X11BypassWindowManagerHint ),
 	m_background( background ),
-	m_mode( mode )
+	m_mode( mode ),
+	m_customMessage( customMessage )
 {
 	auto leftMostScreen = QGuiApplication::primaryScreen();
 	int minimumX = 0;
@@ -105,9 +106,24 @@ void LockWidget::paintEvent( QPaintEvent* event )
 
 	case BackgroundPixmap:
 		p.fillRect( rect(), QColor( 64, 64, 64 ) );
-		p.drawPixmap( ( width() - m_background.width() ) / 2,
-					  ( height() - m_background.height() ) / 2,
-					  m_background );
+		if( m_customMessage.isEmpty() == false )
+		{
+			// message du superviseur à la place de l'image : taille relative à
+			// l'écran pour rester lisible quelle que soit la résolution
+			auto font = p.font();
+			font.setPixelSize( qMax( 24, height() / 20 ) );
+			font.setBold( true );
+			p.setFont( font );
+			p.setPen( Qt::white );
+			p.drawText( rect().adjusted( width() / 10, 0, -width() / 10, 0 ),
+						Qt::AlignCenter | Qt::TextWordWrap, m_customMessage );
+		}
+		else
+		{
+			p.drawPixmap( ( width() - m_background.width() ) / 2,
+						  ( height() - m_background.height() ) / 2,
+						  m_background );
+		}
 		break;
 
 	default:

@@ -22,6 +22,7 @@
  *
  */
 
+#include <QApplication>
 #include <QPainter>
 
 #include "ComputerControlListModel.h"

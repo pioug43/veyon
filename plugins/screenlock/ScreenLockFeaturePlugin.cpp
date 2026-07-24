@@ -80,8 +80,6 @@ bool ScreenLockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation
 											 const QVariantMap& arguments,
 											 const ComputerControlInterfaceList& computerControlInterfaces )
 {
-	Q_UNUSED(arguments)
-
 	if( hasFeature( featureUid ) == false )
 	{
 		return false;
@@ -96,7 +94,18 @@ bool ScreenLockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation
 		auto lockControlInterfaces = computerControlInterfaces;
 		lockControlInterfaces.removeLocalHostInterfaces();
 
-		sendFeatureMessage(FeatureMessage{featureUid, FeatureCommand::StartLock}, lockControlInterfaces);
+		FeatureMessage message{featureUid, FeatureCommand::StartLock};
+
+		// message facultatif affiché à la place de l'image de verrouillage
+		// (fourni par le maître ou la Web API via l'argument « message »)
+		const auto customMessage = arguments.value( QStringLiteral("message") ).toString()
+									   .trimmed().left( 500 );
+		if( customMessage.isEmpty() == false )
+		{
+			message.addArgument( Argument::CustomMessage, customMessage );
+		}
+
+		sendFeatureMessage(message, lockControlInterfaces);
 
 		return true;
 	}
@@ -170,8 +179,17 @@ bool ScreenLockFeaturePlugin::handleFeatureMessage( VeyonWorkerInterface& worker
 					mode = LockWidget::DesktopVisible;
 				}
 
+				// le message personnalisé ne concerne que le verrouillage complet :
+				// en mode « entrées seulement », le bureau reste visible
+				QString customMessage;
+				if( mode == LockWidget::BackgroundPixmap )
+				{
+					customMessage = message.argument( Argument::CustomMessage ).toString();
+				}
+
 				m_lockWidget = new LockWidget( mode,
-											   QPixmap( QStringLiteral(":/screenlock/locked-screen-background.png" ) ) );
+											   QPixmap( QStringLiteral(":/screenlock/locked-screen-background.png" ) ),
+											   customMessage );
 			}
 			return true;
 

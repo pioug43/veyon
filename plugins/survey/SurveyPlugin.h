@@ -4,8 +4,9 @@
  * Réécriture pour le fork pioug43/veyon d'après l'idée de la PR upstream
  * veyon/veyon#1151 (auteur original : efraildokmeegitim). La version de la
  * PR ne relayait jamais les réponses vers le maître et affichait le dialogue
- * via le worker SYSTEM ; cette version corrige la chaîne complète et expose
- * les réponses au portail via featureStatus() (Web API).
+ * via le worker SYSTEM ; cette version corrige la chaîne complète, expose les
+ * réponses via featureStatus() (Web API) et fournit l'interface enseignant
+ * (composition de la question, suivi des réponses, export CSV).
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
@@ -17,9 +18,13 @@
 
 #include <QHash>
 #include <QMutex>
+#include <QPointer>
+#include <QStringList>
 
 #include "FeatureProviderInterface.h"
 #include "MessageContext.h"
+
+class SurveyResultsWindow;
 
 class SurveyPlugin : public QObject, FeatureProviderInterface, PluginInterface
 {
@@ -62,7 +67,7 @@ public:
 
 	QVersionNumber version() const override
 	{
-		return QVersionNumber( 1, 0 );
+		return QVersionNumber( 1, 1 );
 	}
 
 	QString name() const override
@@ -77,12 +82,12 @@ public:
 
 	QString vendor() const override
 	{
-		return QStringLiteral("Veyon Community / Portail VDI INSA Lyon");
+		return QStringLiteral("Veyon Community");
 	}
 
 	QString copyright() const override
 	{
-		return QStringLiteral("efraildokmeegitim, Portail VDI INSA Lyon");
+		return QStringLiteral("efraildokmeegitim, Pierrick Belledent");
 	}
 
 	const FeatureList& featureList() const override
@@ -92,6 +97,12 @@ public:
 
 	bool controlFeature( Feature::Uid featureUid, Operation operation, const QVariantMap& arguments,
 						 const ComputerControlInterfaceList& computerControlInterfaces ) override;
+
+	bool startFeature( VeyonMasterInterface& master, const Feature& feature,
+					   const ComputerControlInterfaceList& computerControlInterfaces ) override;
+
+	bool stopFeature( VeyonMasterInterface& master, const Feature& feature,
+					  const ComputerControlInterfaceList& computerControlInterfaces ) override;
 
 	bool handleFeatureMessage( ComputerControlInterface::Pointer computerControlInterface,
 							   const FeatureMessage& message ) override;
@@ -108,6 +119,11 @@ public:
 	QVariantMap featureStatus( Feature::Uid featureUid,
 							   ComputerControlInterface::Pointer computerControlInterface ) const override;
 
+Q_SIGNALS:
+	// réponse d'un élève reçue côté maître (suivie par SurveyResultsWindow)
+	void surveyAnswerReceived( ComputerControlInterface::Pointer computerControlInterface,
+							   const QString& answer, const QString& answeredAt );
+
 private:
 	static constexpr int MaximumQuestionLength = 1000;
 	static constexpr int MaximumOptionCount = 10;
@@ -117,11 +133,14 @@ private:
 	const Feature m_surveyFeature;
 	const FeatureList m_features;
 
+	// côté maître : fenêtre de suivi des réponses du sondage en cours
+	QPointer<SurveyResultsWindow> m_resultsWindow;
+
 	// côté serveur (poste) : contexte du maître à l'origine du sondage,
 	// nécessaire pour relayer la réponse du worker vers ce maître
 	MessageContext m_masterContext{};
 
-	// côté maître (webapi/portail) : dernière réponse reçue par poste
+	// côté maître : dernière réponse reçue par poste (exposée par featureStatus)
 	mutable QMutex m_answersMutex;
 	QHash<const ComputerControlInterface*, QVariantMap> m_answers;
 };

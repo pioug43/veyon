@@ -44,7 +44,7 @@ public:
 
 	QVersionNumber version() const override
 	{
-		return QVersionNumber( 1, 1 );
+		return QVersionNumber( 1, 2 );
 	}
 
 	QString name() const override
@@ -72,8 +72,20 @@ public:
 		return m_features;
 	}
 
+	/**
+	 * Les postes ne connaissent que la fonctionnalité ScreenLock : les deux
+	 * entrées de menu ne vivent que côté maître. Sans ce mappage, un poste dont
+	 * le « mode désigné » est une de ces entrées serait considéré comme n'ayant
+	 * jamais appliqué le mode, et se verrait re-verrouillé à chaque changement
+	 * d'état de connexion.
+	 */
+	Feature::Uid metaFeature( Feature::Uid featureUid ) const override;
+
 	bool controlFeature( Feature::Uid featureUid, Operation operation, const QVariantMap& arguments,
 						const ComputerControlInterfaceList& computerControlInterfaces ) override;
+
+	bool startFeature( VeyonMasterInterface& master, const Feature& feature,
+					   const ComputerControlInterfaceList& computerControlInterfaces ) override;
 
 	bool handleFeatureMessage( VeyonServerInterface& server,
 							   const MessageContext& messageContext,
@@ -93,7 +105,15 @@ private:
 		CustomMessage
 	};
 
+	static constexpr int MaximumMessageLength = 500;
+
 	const Feature m_screenLockFeature;
+	// Deux entrées de menu côté maître : verrouillage simple et verrouillage
+	// accompagné d'un message affiché à la place de l'image de verrouillage.
+	// La seconde n'a de sens que sur le maître (elle ouvre une saisie), d'où
+	// des sous-fonctions Master plutôt qu'un argument caché.
+	const Feature m_screenLockDirectFeature;
+	const Feature m_screenLockWithMessageFeature;
 	const Feature m_lockInputDevicesFeature;
 	const FeatureList m_features;
 

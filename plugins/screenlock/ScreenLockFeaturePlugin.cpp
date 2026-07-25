@@ -23,6 +23,7 @@
  */
 
 #include <QCoreApplication>
+#include <QInputDialog>
 
 #include "ScreenLockFeaturePlugin.h"
 #include "ComputerControlInterface.h"
@@ -31,6 +32,7 @@
 #include "PlatformCoreFunctions.h"
 #include "PlatformInputDeviceFunctions.h"
 #include "PlatformSessionFunctions.h"
+#include "VeyonMasterInterface.h"
 #include "VeyonServerInterface.h"
 
 
@@ -46,6 +48,21 @@ ScreenLockFeaturePlugin::ScreenLockFeaturePlugin( QObject* parent ) :
 							 "In this mode all input devices are locked and "
 							 "the screens are blacked." ),
 						 QStringLiteral(":/screenlock/system-lock-screen.png") ),
+	m_screenLockDirectFeature( QStringLiteral( "ScreenLockDirect" ),
+							   Feature::Flag::Mode | Feature::Flag::Master,
+							   Feature::Uid( "5c9a6f0e-2b47-4d13-9e58-7a1c4d0b3f62" ),
+							   m_screenLockFeature.uid(),
+							   tr( "Lock" ), {},
+							   tr( "Lock the screens and input devices of all computers." ),
+							   QStringLiteral(":/screenlock/system-lock-screen.png") ),
+	m_screenLockWithMessageFeature( QStringLiteral( "ScreenLockWithMessage" ),
+									Feature::Flag::Mode | Feature::Flag::Master,
+									Feature::Uid( "3e71b8d4-90c6-45fa-8b27-1d6e5c0a94b3" ),
+									m_screenLockFeature.uid(),
+									tr( "Lock with a message..." ), {},
+									tr( "Lock the computers and display a message of your choice "
+										"instead of the lock image." ),
+									QStringLiteral(":/screenlock/system-lock-screen.png") ),
 	m_lockInputDevicesFeature( QStringLiteral( "InputDevicesLock" ),
 							   Feature::Flag::Mode | Feature::Flag::AllComponents | Feature::Flag::Meta,
 							   Feature::Uid( "e4a77879-e544-4fec-bc18-e534f33b934c" ),
@@ -55,7 +72,8 @@ ScreenLockFeaturePlugin::ScreenLockFeaturePlugin( QObject* parent ) :
 								   "their computers using this button. "
 								   "In this mode all input devices are locked while the desktop is still visible." ),
 							   QStringLiteral(":/screenlock/system-lock-screen.png") ),
-	m_features( { m_screenLockFeature, m_lockInputDevicesFeature } ),
+	m_features( { m_screenLockFeature, m_screenLockDirectFeature,
+				  m_screenLockWithMessageFeature, m_lockInputDevicesFeature } ),
 	m_lockWidget( nullptr )
 {
 	if (VeyonCore::component() == VeyonCore::Component::Service)
@@ -76,6 +94,45 @@ ScreenLockFeaturePlugin::~ScreenLockFeaturePlugin()
 
 
 
+Feature::Uid ScreenLockFeaturePlugin::metaFeature( Feature::Uid featureUid ) const
+{
+	if( featureUid == m_screenLockDirectFeature.uid() ||
+		featureUid == m_screenLockWithMessageFeature.uid() )
+	{
+		return m_screenLockFeature.uid();
+	}
+
+	return FeatureProviderInterface::metaFeature( featureUid );
+}
+
+
+
+bool ScreenLockFeaturePlugin::startFeature( VeyonMasterInterface& master, const Feature& feature,
+											const ComputerControlInterfaceList& computerControlInterfaces )
+{
+	if( feature.uid() != m_screenLockWithMessageFeature.uid() )
+	{
+		return FeatureProviderInterface::startFeature( master, feature, computerControlInterfaces );
+	}
+
+	bool confirmed = false;
+	const auto message = QInputDialog::getMultiLineText( master.mainWindow(), tr( "Lock with a message" ),
+														 tr( "Message to display on the locked screens:" ),
+														 {}, &confirmed )
+							 .trimmed().left( MaximumMessageLength );
+	if( confirmed == false || message.isEmpty() )
+	{
+		// annulation ou message vide : ne pas verrouiller, sinon l'enseignant se
+		// retrouverait avec un verrouillage qu'il n'a pas validé
+		return true;
+	}
+
+	return controlFeature( m_screenLockFeature.uid(), Operation::Start,
+						   { { QStringLiteral("message"), message } }, computerControlInterfaces );
+}
+
+
+
 bool ScreenLockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation operation,
 											 const QVariantMap& arguments,
 											 const ComputerControlInterfaceList& computerControlInterfaces )
@@ -83,6 +140,14 @@ bool ScreenLockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation
 	if( hasFeature( featureUid ) == false )
 	{
 		return false;
+	}
+
+	// Les entrées de menu n'existent que côté maître : tout ce qui part vers les
+	// postes doit porter l'identifiant de la fonctionnalité parente.
+	if( featureUid == m_screenLockDirectFeature.uid() ||
+		featureUid == m_screenLockWithMessageFeature.uid() )
+	{
+		featureUid = m_screenLockFeature.uid();
 	}
 
 	if( operation == Operation::Start )
@@ -99,7 +164,7 @@ bool ScreenLockFeaturePlugin::controlFeature( Feature::Uid featureUid, Operation
 		// message facultatif affiché à la place de l'image de verrouillage
 		// (fourni par le maître ou la Web API via l'argument « message »)
 		const auto customMessage = arguments.value( QStringLiteral("message") ).toString()
-									   .trimmed().left( 500 );
+									   .trimmed().left( MaximumMessageLength );
 		if( customMessage.isEmpty() == false )
 		{
 			message.addArgument( Argument::CustomMessage, customMessage );

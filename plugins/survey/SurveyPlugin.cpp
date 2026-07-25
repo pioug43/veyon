@@ -11,19 +11,23 @@
  */
 
 #include <QDateTime>
+#include <QMessageBox>
 #include <QUuid>
 
 #include "SurveyPlugin.h"
+#include "SurveyMasterDialog.h"
+#include "SurveyResultsWindow.h"
 #include "SurveyStudentDialog.h"
 #include "ComputerControlInterface.h"
 #include "FeatureWorkerManager.h"
+#include "VeyonMasterInterface.h"
 #include "VeyonServerInterface.h"
 
 
 SurveyPlugin::SurveyPlugin( QObject* parent ) :
 	QObject( parent ),
 	m_surveyFeature( QStringLiteral("Survey"),
-					 Feature::Flag::Mode | Feature::Flag::Service | Feature::Flag::Worker,
+					 Feature::Flag::Mode | Feature::Flag::AllComponents,
 					 Feature::Uid( "5d7f2a1b-3c4d-5e6f-aaaa-111122223333" ),
 					 Feature::Uid(),
 					 tr( "Survey" ), tr( "Stop survey" ),
@@ -124,6 +128,66 @@ bool SurveyPlugin::controlFeature( Feature::Uid featureUid, Operation operation,
 
 
 
+bool SurveyPlugin::startFeature( VeyonMasterInterface& master, const Feature& feature,
+								 const ComputerControlInterfaceList& computerControlInterfaces )
+{
+	if( feature.uid() != m_surveyFeature.uid() )
+	{
+		return false;
+	}
+
+	auto targetInterfaces = computerControlInterfaces;
+	targetInterfaces.removeLocalHostInterfaces();
+
+	if( targetInterfaces.isEmpty() )
+	{
+		QMessageBox::information( master.mainWindow(), tr( "Survey" ),
+								  tr( "Please select at least one computer." ) );
+		return true;
+	}
+
+	SurveyMasterDialog dialog( master.mainWindow() );
+	if( dialog.exec() != QDialog::Accepted )
+	{
+		return true;
+	}
+
+	if( controlFeature( m_surveyFeature.uid(), Operation::Start,
+						dialog.surveyArguments(), targetInterfaces ) == false )
+	{
+		return true;
+	}
+
+	// une fenêtre de suivi par sondage : la précédente n'a plus d'objet
+	delete m_resultsWindow;
+
+	m_resultsWindow = new SurveyResultsWindow( this, dialog.question(), dialog.questionType(),
+											   dialog.options(), targetInterfaces,
+											   master.mainWindow() );
+	m_resultsWindow->show();
+
+	return true;
+}
+
+
+
+bool SurveyPlugin::stopFeature( VeyonMasterInterface& master, const Feature& feature,
+								const ComputerControlInterfaceList& computerControlInterfaces )
+{
+	Q_UNUSED(master)
+
+	if( feature.uid() != m_surveyFeature.uid() )
+	{
+		return false;
+	}
+
+	// la fenêtre de suivi reste ouverte : l'enseignant peut encore consulter et
+	// exporter les réponses après avoir refermé le sondage sur les postes
+	return controlFeature( m_surveyFeature.uid(), Operation::Stop, {}, computerControlInterfaces );
+}
+
+
+
 bool SurveyPlugin::handleFeatureMessage( ComputerControlInterface::Pointer computerControlInterface,
 										 const FeatureMessage& message )
 {
@@ -140,8 +204,14 @@ bool SurveyPlugin::handleFeatureMessage( ComputerControlInterface::Pointer compu
 		{ QStringLiteral("answeredAt"), QDateTime::currentDateTimeUtc().toString( Qt::ISODate ) },
 	};
 
-	QMutexLocker locker( &m_answersMutex );
-	m_answers.insert( computerControlInterface.data(), answer );
+	{
+		QMutexLocker locker( &m_answersMutex );
+		m_answers.insert( computerControlInterface.data(), answer );
+	}
+
+	Q_EMIT surveyAnswerReceived( computerControlInterface,
+								 answer.value( QStringLiteral("answer") ).toString(),
+								 answer.value( QStringLiteral("answeredAt") ).toString() );
 
 	return true;
 }

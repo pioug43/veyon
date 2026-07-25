@@ -9,6 +9,8 @@ add_library(veyon-restrictions STATIC
 	ExamModeProfile.h
 	ExamModeWindowsNative.cpp
 	ExamModeWindowsNative.h
+	RegistryPolicyGuard.cpp
+	RegistryPolicyGuard.h
 	RestrictionEnforcer.cpp
 	RestrictionEnforcer.h
 	RestrictionRules.h

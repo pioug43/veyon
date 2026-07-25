@@ -143,7 +143,9 @@ void RaiseHandStudentWidget::toggleHand()
 
 void RaiseHandStudentWidget::mousePressEvent( QMouseEvent* event )
 {
-	m_dragOffset = event->globalPosition().toPoint() - frameGeometry().topLeft();
+	// globalPos() et non globalPosition() : le dépôt se compile aussi avec
+	// Qt 5.15, où globalPosition() n'existe pas.
+	m_dragOffset = event->globalPos() - frameGeometry().topLeft();
 
 	QWidget::mousePressEvent( event );
 }
@@ -155,7 +157,7 @@ void RaiseHandStudentWidget::mouseMoveEvent( QMouseEvent* event )
 	// déplacement à la souris : l'élève peut écarter le bouton de son travail
 	if( event->buttons().testFlag( Qt::LeftButton ) )
 	{
-		move( event->globalPosition().toPoint() - m_dragOffset );
+		move( event->globalPos() - m_dragOffset );
 	}
 
 	QWidget::mouseMoveEvent( event );

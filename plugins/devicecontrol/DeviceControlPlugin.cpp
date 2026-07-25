@@ -19,6 +19,7 @@
 #include <QProcess>
 #include <QThreadPool>
 #include <QTimer>
+#include <QtConcurrent>
 
 #include "ComputerControlInterface.h"
 #include "DeviceControlPlugin.h"
@@ -670,7 +671,10 @@ bool DeviceControlPlugin::applyPrintingBlocking( bool blocked )
 		return true;
 	}
 
-	m_servicePool.start( [service, blocked]() {
+	// QtConcurrent::run plutôt que QThreadPool::start(lambda), qui exige
+	// Qt 6.3 : le dépôt se compile aussi avec Qt 5.15. Le pool POSSÉDÉ est
+	// passé explicitement, sans quoi la tâche irait sur le pool global.
+	QtConcurrent::run( &m_servicePool, [service, blocked]() {
 		auto& functions = VeyonCore::platform().serviceFunctions();
 		if( blocked ? functions.stop( service ) : functions.start( service ) )
 		{

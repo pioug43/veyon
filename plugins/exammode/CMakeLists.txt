@@ -7,21 +7,24 @@ build_veyon_plugin(exammode
 	ExamModeFeaturePlugin.h
 	ExamModeLinuxExecGuard.cpp
 	ExamModeLinuxExecGuard.h
-	ExamModeProfile.cpp
-	ExamModeProfile.h
 	ExamModeSession.cpp
 	ExamModeSession.h
 	ExamModeVdiClient.cpp
 	ExamModeVdiClient.h
-	ExamModeWindowsNative.cpp
-	ExamModeWindowsNative.h
 	)
 
+# ExamModeProfile (modèle de règles, PAC, nftables) et ExamModeWindowsNative
+# (registre, terminaison de processus) vivent désormais dans la bibliothèque
+# partagée veyon-restrictions : ils sont utilisés à l'identique par le plugin
+# courserestrictions. Les fichiers ont été déplacés SANS modification de code.
+target_link_libraries(exammode PRIVATE veyon-restrictions)
+
 if(WIN32)
-	# advapi32 : registre/ACL ; user32 : énumération de fenêtres + moniteurs ;
-	# wtsapi32 : message dans la session interactive (WTSSendMessage). Ensemble :
-	# contrôle/forçage plein écran du client VDI Omnissa Horizon + avertissement.
-	target_link_libraries(exammode PRIVATE advapi32 user32 wtsapi32)
+	# user32 : énumération de fenêtres + moniteurs ; wtsapi32 : message dans la
+	# session interactive (WTSSendMessage). Ensemble : contrôle/forçage plein
+	# écran du client VDI Omnissa Horizon + avertissement. (advapi32 est fourni
+	# par veyon-restrictions.)
+	target_link_libraries(exammode PRIVATE user32 wtsapi32)
 endif()
 
 # Contrôle/forçage plein écran du client VDI sous Linux : X11/EWMH. Optionnel —
@@ -43,8 +46,8 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(WITH_TESTS)
-	add_executable(ExamModeProfileTest ExamModeProfileTest.cpp ExamModeProfile.cpp)
-	target_link_libraries(ExamModeProfileTest PRIVATE Qt${QT_MAJOR_VERSION}::Test Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Network)
+	add_executable(ExamModeProfileTest ExamModeProfileTest.cpp)
+	target_link_libraries(ExamModeProfileTest PRIVATE veyon-restrictions Qt${QT_MAJOR_VERSION}::Test Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Network)
 	add_test(NAME ExamModeProfileTest COMMAND ExamModeProfileTest)
 
 	add_executable(ExamModeSessionTest ExamModeSessionTest.cpp ExamModeSession.cpp)

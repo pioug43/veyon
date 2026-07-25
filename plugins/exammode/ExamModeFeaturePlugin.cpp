@@ -2678,9 +2678,13 @@ bool ExamModeFeaturePlugin::applyWindowsSiteFiltering( const QStringList& sites,
 		return true;		// pas de filtrage de domaines PAC (le firewall éventuel est déjà posé)
 	}
 	const auto pac = ExamModeProfile::buildPac( m_urlRules, m_defaultUrlAction );
-	const auto dataUrl = QStringLiteral("data:application/x-ns-proxy-autoconfig;base64,")
+	// Type explicite obligatoire : avec QT_USE_QSTRINGBUILDER, « auto » déduirait
+	// un QStringBuilder qui ne conserve que des RÉFÉRENCES vers les temporaires
+	// concaténés — celles-ci pendouillent dès la fin de l'instruction et les
+	// valeurs écrites dans le registre seraient lues après libération.
+	const QString dataUrl = QStringLiteral("data:application/x-ns-proxy-autoconfig;base64,")
 		+ QString::fromLatin1( pac.toBase64() );
-	const auto fileUrl = QStringLiteral("file:///") + pacFilePath();
+	const QString fileUrl = QStringLiteral("file:///") + pacFilePath();
 
 	const QList<QPair<QString, QString>> policyValues = {
 		{ QStringLiteral("HKLM\\SOFTWARE\\Policies\\Google\\Chrome"), QStringLiteral("ProxyMode") },

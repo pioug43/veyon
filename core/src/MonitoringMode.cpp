@@ -211,6 +211,11 @@ bool MonitoringMode::handleFeatureMessage( ComputerControlInterface::Pointer com
 													 message.argument(Argument::SessionClientName).toString(),
 													 message.argument(Argument::SessionHostName).toString(),
 													 message.argument(Argument::SessionMetaData).toString(),
+													 message.argument(Argument::SessionActiveApplication).toString(),
+													 // poste plus ancien : argument absent → inactivité inconnue
+													 message.argument(Argument::SessionIdleTime).isValid()
+														 ? message.argument(Argument::SessionIdleTime).toInt()
+														 : PlatformSessionFunctions::InvalidIdleTime,
 												 });
 
 		return true;
@@ -446,6 +451,8 @@ bool MonitoringMode::sendSessionInfo(VeyonServerInterface& server, const Message
 	message.addArgument(Argument::SessionClientName, m_sessionInfo.clientName);
 	message.addArgument(Argument::SessionHostName, m_sessionInfo.hostName);
 	message.addArgument(Argument::SessionMetaData, m_sessionInfo.metaData);
+	message.addArgument(Argument::SessionActiveApplication, m_sessionInfo.activeApplication);
+	message.addArgument(Argument::SessionIdleTime, m_sessionInfo.idleSeconds);
 	m_sessionInfoLock.unlock();
 
 	return server.sendFeatureMessageReply(messageContext,message);
@@ -563,7 +570,9 @@ void MonitoringMode::updateSessionInfo()
 					VeyonCore::platform().sessionFunctions().currentSessionClientAddress(),
 					VeyonCore::platform().sessionFunctions().currentSessionClientName(),
 					VeyonCore::platform().sessionFunctions().currentSessionHostName(),
-					sessionMetaData
+					sessionMetaData,
+					VeyonCore::platform().sessionFunctions().currentSessionActiveApplication(),
+					VeyonCore::platform().sessionFunctions().currentSessionIdleTime()
 		};
 
 		if(!guard)

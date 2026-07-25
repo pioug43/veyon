@@ -37,6 +37,14 @@
 #include "LinuxSessionFunctions.h"
 #include "PlatformSessionManager.h"
 
+// En dernier : les en-têtes X11 définissent des macros (None, Success, Status…)
+// qui entrent en conflit avec Qt. C'est aussi la raison du
+// SKIP_UNITY_BUILD_INCLUSION posé sur ce fichier dans CMakeLists.txt.
+#include <X11/Xlib.h>
+#ifdef HAVE_XSCREENSAVER
+#include <X11/extensions/scrnsaver.h>
+#endif
+
 
 LinuxSessionFunctions::SessionId LinuxSessionFunctions::currentSessionId()
 {
@@ -69,6 +77,107 @@ QString LinuxSessionFunctions::currentSessionClientName() const
 QString LinuxSessionFunctions::currentSessionHostName() const
 {
 	return QHostInfo::localHostName();
+}
+
+
+
+/**
+ * Titre de la fenêtre active, via les propriétés EWMH _NET_ACTIVE_WINDOW puis
+ * _NET_WM_NAME du serveur X. Sous Wayland, aucun client ne peut interroger la
+ * fenêtre active d'un autre : on renvoie une chaîne vide plutôt qu'une donnée
+ * fausse (voir aussi LinuxCoreFunctions::activeDesktopName, qui dégrade de la
+ * même manière).
+ */
+QString LinuxSessionFunctions::currentSessionActiveApplication() const
+{
+	auto* display = XOpenDisplay( nullptr );
+	if( display == nullptr )
+	{
+		return {};
+	}
+
+	QString title;
+
+	const auto activeWindowAtom = XInternAtom( display, "_NET_ACTIVE_WINDOW", True );
+	const auto nameAtom = XInternAtom( display, "_NET_WM_NAME", True );
+	const auto utf8Atom = XInternAtom( display, "UTF8_STRING", True );
+
+	if( activeWindowAtom != None && nameAtom != None && utf8Atom != None )
+	{
+		Atom type = None;
+		int format = 0;
+		unsigned long items = 0;
+		unsigned long bytesAfter = 0;
+		unsigned char* data = nullptr;
+
+		if( XGetWindowProperty( display, DefaultRootWindow( display ), activeWindowAtom, 0, 1, False,
+								AnyPropertyType, &type, &format, &items, &bytesAfter, &data ) == Success &&
+			data != nullptr )
+		{
+			if( items > 0 && format == 32 )
+			{
+				const auto window = *reinterpret_cast<Window *>( data );
+
+				unsigned char* nameData = nullptr;
+				// 1024 unités de 32 bits : très au-delà d'un titre de fenêtre
+				if( window != None &&
+					XGetWindowProperty( display, window, nameAtom, 0, 1024, False, utf8Atom,
+										&type, &format, &items, &bytesAfter, &nameData ) == Success &&
+					nameData != nullptr )
+				{
+					title = QString::fromUtf8( reinterpret_cast<const char *>( nameData ) );
+					XFree( nameData );
+				}
+			}
+
+			XFree( data );
+		}
+	}
+
+	XCloseDisplay( display );
+
+	return title;
+}
+
+
+
+int LinuxSessionFunctions::currentSessionIdleTime() const
+{
+#ifdef HAVE_XSCREENSAVER
+	auto* display = XOpenDisplay( nullptr );
+	if( display == nullptr )
+	{
+		return InvalidIdleTime;
+	}
+
+	int eventBase = 0;
+	int errorBase = 0;
+	int idleSeconds = InvalidIdleTime;
+
+	if( XScreenSaverQueryExtension( display, &eventBase, &errorBase ) )
+	{
+		auto* const info = XScreenSaverAllocInfo();
+		if( info != nullptr )
+		{
+			if( XScreenSaverQueryInfo( display, DefaultRootWindow( display ), info ) )
+			{
+				idleSeconds = static_cast<int>( info->idle / 1000 );
+				idleSeconds -= idleSeconds % IdleTimeGranularity;
+			}
+
+			XFree( info );
+		}
+	}
+
+	XCloseDisplay( display );
+
+	return idleSeconds;
+#else
+	// Sans l'extension XScreenSaver à la compilation, l'inactivité n'est pas
+	// mesurable ici : on l'annonce inconnue plutôt que de renvoyer 0, qui ferait
+	// passer un poste délaissé pour un poste actif.
+	return InvalidIdleTime;
+#endif
 }
 
 

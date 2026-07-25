@@ -917,6 +917,11 @@ WebApiController::Response WebApiController::getSessionInformation(const Request
 			{k2s(Key::SessionClientAddress), controlInterface->sessionInfo().clientAddress},
 			{k2s(Key::SessionClientName), controlInterface->sessionInfo().clientName},
 			{k2s(Key::SessionHostName), controlInterface->sessionInfo().hostName},
+			// Application au premier plan et inactivité (en secondes). Chaîne
+			// vide / -1 quand le poste ne sait pas les fournir : sous Wayland,
+			// ou lorsqu'il exécute une version antérieure.
+			{k2s(Key::SessionActiveApplication), controlInterface->sessionInfo().activeApplication},
+			{k2s(Key::SessionIdleTime), controlInterface->sessionInfo().idleSeconds},
 		}
 	};
 }

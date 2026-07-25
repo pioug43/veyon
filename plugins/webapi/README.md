@@ -31,6 +31,31 @@ The bundled page implements these endpoints with an HTML canvas. Integrations ca
 {"active": true, "arguments": {}}
 ```
 
+## Session information
+
+`GET /api/v1/session` reports what the computer is currently doing:
+
+```json
+{
+  "sessionId": 0,
+  "sessionUptime": 3812,
+  "sessionClientAddress": "10.0.0.42",
+  "sessionClientName": "THINCLIENT-07",
+  "sessionHostName": "PC-12",
+  "sessionActiveApplication": "Report.docx - Word",
+  "sessionIdleTime": 45
+}
+```
+
+`sessionActiveApplication` is the title of the foreground window (or the
+executable name when the window has no title). `sessionIdleTime` is how long
+the user has been idle, in seconds, rounded down to a 15 second step.
+
+Both degrade honestly rather than guessing: the application is an empty string
+and the idle time is `-1` when the computer cannot determine them — under
+Wayland, where a client cannot inspect another client's window, and on
+computers running a Veyon version that predates these fields.
+
 ## Teacher screen broadcast
 
 Authenticate one connection to the teacher computer and one connection to every target computer. Then call the WebAPI server that owns all these connections:

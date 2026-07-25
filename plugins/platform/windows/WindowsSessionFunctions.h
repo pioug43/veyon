@@ -54,6 +54,9 @@ public:
 	QString currentSessionType() const override;
 	bool currentSessionHasUser() const override;
 
+	QString currentSessionActiveApplication() const override;
+	int currentSessionIdleTime() const override;
+
 	EnvironmentVariables currentSessionEnvironmentVariables() const override;
 	QVariant querySettingsValueInCurrentSession(const QString& key) const override;
 

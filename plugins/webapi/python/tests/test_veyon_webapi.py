@@ -56,6 +56,10 @@ class Test_VeyonWebAPI(unittest.TestCase):
 		assert 'sessionClientAddress' in session_information
 		assert 'sessionClientName' in session_information
 		assert 'sessionHostName' in session_information
+		# Application au premier plan et inactivité : toujours présentes, mais
+		# vides / -1 quand la plateforme du poste ne sait pas les fournir.
+		assert 'sessionActiveApplication' in session_information
+		assert 'sessionIdleTime' in session_information
 
 	def test_connection_information(self):
 		connection_information = self.client.connection_information()

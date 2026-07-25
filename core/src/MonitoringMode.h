@@ -49,6 +49,10 @@ public:
 		SessionMetaData,
 		UserIdentity,
 		UserIdentificationContextId,
+		// Nouveaux arguments TOUJOURS ajoutés à la fin : ils sont sérialisés
+		// par leur position dans cette énumération.
+		SessionActiveApplication,
+		SessionIdleTime,
 		ActiveFeaturesList = 0 // for compatibility after migration from FeatureControl
 	};
 	Q_ENUM(Argument)

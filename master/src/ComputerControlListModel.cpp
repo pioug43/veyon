@@ -324,14 +324,16 @@ void ComputerControlListModel::updateUser( const QModelIndex& index )
 
 void ComputerControlListModel::updateSessionInfo(const QModelIndex& index)
 {
+	// DisplayRole/SizeHintRole en plus de ToolTipRole : la légende porte
+	// désormais l'application active et l'inactivité, qui viennent de la
+	// session — sans cela la deuxième ligne ne serait jamais rafraîchie.
 	if (uidRoleContent() == UidRoleContent::SessionMetaDataHash)
 	{
-		Q_EMIT dataChanged(index, index, {Qt::ToolTipRole, UidRole});
+		Q_EMIT dataChanged(index, index, {Qt::DisplayRole, Qt::ToolTipRole, Qt::SizeHintRole, UidRole});
 	}
 	else
 	{
-		Q_EMIT dataChanged(index, index, {Qt::ToolTipRole});
-
+		Q_EMIT dataChanged(index, index, {Qt::DisplayRole, Qt::ToolTipRole, Qt::SizeHintRole});
 	}
 
 	auto controlInterface = computerControlInterface( index );
@@ -494,10 +496,11 @@ QString ComputerControlListModel::computerDisplayRole( const ComputerControlInte
 
 		if( displayRoleContent() == DisplayRoleContent::UserName )
 		{
-			return user;
+			return user + computerActivityRole( controlInterface );
 		}
 
-		return QStringLiteral("%1 - %2").arg(user, controlInterface->computerName());
+		return QStringLiteral("%1 - %2").arg(user, controlInterface->computerName()) +
+			   computerActivityRole( controlInterface );
 	}
 
 	if( displayRoleContent() != DisplayRoleContent::UserName )
@@ -506,6 +509,36 @@ QString ComputerControlListModel::computerDisplayRole( const ComputerControlInte
 	}
 
 	return tr("[no user]");
+}
+
+
+
+/**
+ * Deuxième ligne de la légende : application au premier plan, ou durée
+ * d'inactivité si le poste est délaissé depuis un moment. Chaîne vide quand la
+ * plateforme du poste ne sait fournir ni l'une ni l'autre (Wayland, poste d'une
+ * version antérieure) — la vignette garde alors son apparence habituelle.
+ */
+QString ComputerControlListModel::computerActivityRole( const ComputerControlInterface::Pointer& controlInterface ) const
+{
+	const auto& sessionInfo = controlInterface->sessionInfo();
+
+	const auto idleSeconds = sessionInfo.idleSeconds;
+	if( idleSeconds >= IdleThreshold )
+	{
+		return QStringLiteral("\n") + tr("idle for %1 min").arg( idleSeconds / 60 );
+	}
+
+	const auto application = sessionInfo.activeApplication.simplified();
+	if( application.isEmpty() )
+	{
+		return {};
+	}
+
+	// un titre de fenêtre peut être très long : la vignette n'en montre que le début
+	return QStringLiteral("\n") + ( application.length() > MaximumActivityLength
+		? application.left( MaximumActivityLength - 1 ) + QStringLiteral("…")
+		: application );
 }
 
 

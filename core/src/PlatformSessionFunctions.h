@@ -43,6 +43,13 @@ public:
 		QString clientName;
 		QString hostName;
 		QString metaData;
+		// Application au premier plan et inactivité de la session. Vide / -1
+		// quand la plateforme ne sait pas les fournir (Wayland notamment) :
+		// mieux vaut une donnée absente qu'une donnée fausse.
+		// NB : tout nouveau champ se met À LA FIN — la sérialisation de
+		// MonitoringMode est positionnelle.
+		QString activeApplication;
+		int idleSeconds = InvalidIdleTime;
 		bool operator==(const SessionInfo& other) const
 		{
 			return other.id == id &&
@@ -50,7 +57,9 @@ public:
 					other.clientAddress == clientAddress &&
 					other.clientName == clientName &&
 					other.hostName == hostName &&
-					other.metaData == metaData;
+					other.metaData == metaData &&
+					other.activeApplication == activeApplication &&
+					other.idleSeconds == idleSeconds;
 		}
 		bool operator!=(const SessionInfo& other) const
 		{
@@ -61,6 +70,13 @@ public:
 	static constexpr SessionId DefaultSessionId = 0;
 	static constexpr SessionId InvalidSessionId = -1;
 	static constexpr SessionUptime InvalidSessionUptime = -1;
+	static constexpr int InvalidIdleTime = -1;
+
+	// L'inactivité est arrondie à ce pas avant d'être publiée : sans cela, sa
+	// valeur changerait à chaque seconde et ferait remonter un message par
+	// seconde et par poste alors qu'une précision à la minute suffit à repérer
+	// un poste délaissé.
+	static constexpr int IdleTimeGranularity = 15;
 
 	enum class SessionMetaDataContent
 	{
@@ -81,6 +97,21 @@ public:
 
 	virtual QString currentSessionType() const = 0;
 	virtual bool currentSessionHasUser() const = 0;
+
+	/**
+	 * Nom de l'application au premier plan de la session (titre de fenêtre ou
+	 * nom d'exécutable selon la plateforme). Chaîne vide si la plateforme ne
+	 * permet pas de l'obtenir — c'est le cas sous Wayland, où aucun client ne
+	 * peut interroger la fenêtre active d'un autre.
+	 */
+	virtual QString currentSessionActiveApplication() const = 0;
+
+	/**
+	 * Durée d'inactivité de l'utilisateur, en secondes, arrondie à
+	 * IdleTimeGranularity. InvalidIdleTime si la plateforme ne sait pas la
+	 * fournir.
+	 */
+	virtual int currentSessionIdleTime() const = 0;
 
 	virtual EnvironmentVariables currentSessionEnvironmentVariables() const = 0;
 	virtual QVariant querySettingsValueInCurrentSession(const QString& key) const = 0;

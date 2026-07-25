@@ -28,6 +28,10 @@
 #include <QHostInfo>
 #include <QSettings>
 
+#include <iterator>
+
+#include "PlatformCoreFunctions.h"
+
 #include "WindowsCoreFunctions.h"
 #include "PlatformSessionManager.h"
 #include "PlatformUserFunctions.h"
@@ -89,6 +93,61 @@ QString WindowsSessionFunctions::currentSessionClientName() const
 QString WindowsSessionFunctions::currentSessionHostName() const
 {
 	return QHostInfo::localHostName();
+}
+
+
+
+/**
+ * Titre de la fenêtre au premier plan, sinon le nom de l'exécutable qui la
+ * possède (certaines fenêtres n'ont pas de titre). Le serveur Veyon tourne
+ * dans la session interactive : GetForegroundWindow() y voit bien la fenêtre
+ * active de l'utilisateur.
+ */
+QString WindowsSessionFunctions::currentSessionActiveApplication() const
+{
+	const auto window = GetForegroundWindow();
+	if( window == nullptr )
+	{
+		return {};
+	}
+
+	wchar_t title[512] = {};
+	const auto length = GetWindowTextW( window, title, static_cast<int>( std::size(title) ) );
+	if( length > 0 )
+	{
+		return QString::fromWCharArray( title, length );
+	}
+
+	DWORD processId = 0;
+	GetWindowThreadProcessId( window, &processId );
+	if( processId == 0 )
+	{
+		return {};
+	}
+
+	return VeyonCore::platform().coreFunctions().getApplicationName( processId );
+}
+
+
+
+int WindowsSessionFunctions::currentSessionIdleTime() const
+{
+	LASTINPUTINFO lastInput{};
+	lastInput.cbSize = sizeof( lastInput );
+
+	if( GetLastInputInfo( &lastInput ) == FALSE )
+	{
+		return InvalidIdleTime;
+	}
+
+	// GetTickCount() et dwTime sont des compteurs 32 bits qui débordent au bout
+	// de ~49 jours : la soustraction non signée reste correcte au débordement.
+	const auto idleMilliseconds = static_cast<quint32>( GetTickCount() ) -
+								  static_cast<quint32>( lastInput.dwTime );
+
+	const auto idleSeconds = static_cast<int>( idleMilliseconds / 1000 );
+
+	return idleSeconds - ( idleSeconds % IdleTimeGranularity );
 }
 
 

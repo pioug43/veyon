@@ -56,7 +56,10 @@ build_veyon_plugin(linux-platform
 	../common/ServiceDataManager.cpp
 )
 
+# Ces fichiers incluent des en-têtes X11, dont les macros (None, Success…)
+# entrent en conflit avec Qt : ils ne peuvent pas entrer dans un build unifié.
 set_source_files_properties(LinuxCoreFunctions.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+set_source_files_properties(LinuxSessionFunctions.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
 
 target_include_directories(linux-platform PRIVATE ../common)
 
@@ -92,6 +95,19 @@ endif()
 
 target_include_directories(linux-platform PRIVATE ${procps_INCLUDE_DIRS})
 target_link_libraries(linux-platform PRIVATE ${procps_LDFLAGS})
+
+# Extension XScreenSaver : seule façon portable de mesurer l'inactivité de
+# l'utilisateur sous X11. Optionnelle — sans elle, l'inactivité est simplement
+# annoncée « inconnue » (cf. LinuxSessionFunctions::currentSessionIdleTime).
+pkg_check_modules(xscrnsaver xscrnsaver)
+
+if(xscrnsaver_FOUND)
+	target_compile_definitions(linux-platform PRIVATE -DHAVE_XSCREENSAVER)
+	target_include_directories(linux-platform PRIVATE ${xscrnsaver_INCLUDE_DIRS})
+	target_link_libraries(linux-platform PRIVATE ${xscrnsaver_LDFLAGS})
+else()
+	message(STATUS "XScreenSaver not found - user idle time will be unavailable")
+endif()
 
 pkg_check_modules(fakekey libfakekey)
 

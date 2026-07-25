@@ -87,7 +87,9 @@ public:
 		Token,
 		Host,
 		Port,
-		ValidUntil
+		ValidUntil,
+		SessionActiveApplication,
+		SessionIdleTime
 	};
 	Q_ENUM(Key)
 

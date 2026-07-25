@@ -85,6 +85,13 @@ private:
 	QImage computerDecorationRole( const ComputerControlInterface::Pointer& controlInterface ) const;
 	QString computerToolTipRole( const ComputerControlInterface::Pointer& controlInterface ) const;
 	QString computerDisplayRole( const ComputerControlInterface::Pointer& controlInterface ) const;
+	QString computerActivityRole( const ComputerControlInterface::Pointer& controlInterface ) const;
+
+	// Seuil à partir duquel un poste est annoncé inactif plutôt que par son
+	// application au premier plan : en dessous, l'enseignant voit encore sur
+	// quoi l'élève travaillait, ce qui est plus utile.
+	static constexpr int IdleThreshold = 120;
+	static constexpr int MaximumActivityLength = 40;
 	QString computerSortRole( const ComputerControlInterface::Pointer& controlInterface ) const;
 	static QString computerStateDescription( const ComputerControlInterface::Pointer& controlInterface );
 	static QString userInformation(const ComputerControlInterface::Pointer& controlInterface);

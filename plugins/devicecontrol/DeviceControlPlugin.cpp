@@ -674,7 +674,11 @@ bool DeviceControlPlugin::applyPrintingBlocking( bool blocked )
 	// QtConcurrent::run plutôt que QThreadPool::start(lambda), qui exige
 	// Qt 6.3 : le dépôt se compile aussi avec Qt 5.15. Le pool POSSÉDÉ est
 	// passé explicitement, sans quoi la tâche irait sur le pool global.
-	QtConcurrent::run( &m_servicePool, [service, blocked]() {
+	// Le futur n'est volontairement pas attendu ici — c'est tout l'intérêt —
+	// mais QtConcurrent::run est nodiscard : le conserver rend l'intention
+	// explicite. Son destructeur n'annule ni n'attend la tâche ; c'est le
+	// destructeur du pool possédé qui s'en charge.
+	[[maybe_unused]] const auto transition = QtConcurrent::run( &m_servicePool, [service, blocked]() {
 		auto& functions = VeyonCore::platform().serviceFunctions();
 		if( blocked ? functions.stop( service ) : functions.start( service ) )
 		{

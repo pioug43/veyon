@@ -156,8 +156,10 @@ void SurveyResultsWindow::rebuildSummary()
 	auto options = m_options;
 	if( m_questionType == int(SurveyPlugin::QuestionType::TrueFalse) )
 	{
-		// le dialogue élève propose ces deux réponses pour une question Vrai/Faux
-		options = { tr( "True" ), tr( "False" ) };
+		// le dialogue élève propose ces deux réponses pour une question Vrai/Faux.
+		// Affectation explicite : avec Qt 5.15, « = { a, b } » sur un QStringList
+		// est une surcharge ambiguë.
+		options = QStringList{ tr( "True" ), tr( "False" ) };
 	}
 
 	QList<int> counts;

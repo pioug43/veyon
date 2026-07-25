@@ -13,14 +13,26 @@
 
 #if defined(_WIN32)
 
-// INITGUID définit les GUID COM dans cette unité de compilation : cela évite
-// de dépendre d'une bibliothèque d'import pour CLSID_MMDeviceEnumerator et
-// consorts, ce que toutes les chaînes de compilation Windows ne fournissent
-// pas de la même façon.
-#define INITGUID
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <endpointvolume.h>
+
+namespace
+{
+
+// Les GUID de l'API MMDevice sont écrits ici plutôt que repris des en-têtes :
+// le compilateur croisé MinGW utilisé pour l'installeur ne les fournit dans
+// aucune bibliothèque d'import, et la recette habituelle (INITGUID avant
+// windows.h) est inopérante en compilation unifiée, où un autre fichier a déjà
+// inclus windows.h. Ces valeurs sont fixées par Microsoft et ne changent pas.
+constexpr GUID ClsidMMDeviceEnumerator =
+	{ 0xBCDE0395, 0xE52F, 0x467C, { 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E } };
+constexpr GUID IidIMMDeviceEnumerator =
+	{ 0xA95664D2, 0x9614, 0x4F35, { 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6 } };
+constexpr GUID IidIAudioEndpointVolume =
+	{ 0x5CDF2C82, 0x841E, 0x4546, { 0x97, 0x22, 0x0C, 0xF7, 0x40, 0x78, 0x22, 0x9A } };
+
+}
 
 namespace DeviceControlWindowsAudio
 {
@@ -42,15 +54,15 @@ bool setDefaultOutputMuted( bool muted )
 	bool success = false;
 
 	IMMDeviceEnumerator* enumerator = nullptr;
-	if( CoCreateInstance( CLSID_MMDeviceEnumerator, nullptr, CLSCTX_ALL,
-						  IID_IMMDeviceEnumerator, reinterpret_cast<void **>( &enumerator ) ) == S_OK &&
+	if( CoCreateInstance( ClsidMMDeviceEnumerator, nullptr, CLSCTX_ALL,
+						  IidIMMDeviceEnumerator, reinterpret_cast<void **>( &enumerator ) ) == S_OK &&
 		enumerator != nullptr )
 	{
 		IMMDevice* device = nullptr;
 		if( enumerator->GetDefaultAudioEndpoint( eRender, eConsole, &device ) == S_OK && device != nullptr )
 		{
 			IAudioEndpointVolume* endpointVolume = nullptr;
-			if( device->Activate( IID_IAudioEndpointVolume, CLSCTX_ALL, nullptr,
+			if( device->Activate( IidIAudioEndpointVolume, CLSCTX_ALL, nullptr,
 								  reinterpret_cast<void **>( &endpointVolume ) ) == S_OK &&
 				endpointVolume != nullptr )
 			{

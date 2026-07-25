@@ -23,6 +23,25 @@
 
 QPointer<RaiseHandStudentWidget> RaiseHandStudentWidget::s_instance = nullptr;
 
+namespace
+{
+
+/**
+ * Position globale du pointeur, portable entre les deux Qt que le dépôt
+ * compile : globalPosition() n'existe pas en Qt 5.15, et globalPos() est
+ * déprécié — donc refusé par -Werror — sur les Qt 6 récents.
+ */
+QPoint pointerGlobalPosition( const QMouseEvent* event )
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	return event->globalPosition().toPoint();
+#else
+	return event->globalPos();
+#endif
+}
+
+}
+
 
 RaiseHandStudentWidget::RaiseHandStudentWidget( Feature::Uid featureUid, VeyonWorkerInterface* worker ) :
 	QWidget( nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint ),
@@ -143,9 +162,7 @@ void RaiseHandStudentWidget::toggleHand()
 
 void RaiseHandStudentWidget::mousePressEvent( QMouseEvent* event )
 {
-	// globalPos() et non globalPosition() : le dépôt se compile aussi avec
-	// Qt 5.15, où globalPosition() n'existe pas.
-	m_dragOffset = event->globalPos() - frameGeometry().topLeft();
+	m_dragOffset = pointerGlobalPosition( event ) - frameGeometry().topLeft();
 
 	QWidget::mousePressEvent( event );
 }
@@ -157,7 +174,7 @@ void RaiseHandStudentWidget::mouseMoveEvent( QMouseEvent* event )
 	// déplacement à la souris : l'élève peut écarter le bouton de son travail
 	if( event->buttons().testFlag( Qt::LeftButton ) )
 	{
-		move( event->globalPos() - m_dragOffset );
+		move( pointerGlobalPosition( event ) - m_dragOffset );
 	}
 
 	QWidget::mouseMoveEvent( event );

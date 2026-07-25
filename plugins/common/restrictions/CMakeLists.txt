@@ -26,3 +26,11 @@ if(WIN32)
 	# advapi32 : registre (IFEO, politiques navigateur) et ACL des fichiers d'état.
 	target_link_libraries(veyon-restrictions PUBLIC advapi32)
 endif()
+
+if(WITH_TESTS)
+	# Cloisonnement des fichiers d'état : c'est lui qui empêche un consommateur
+	# de restaurer le registre posé par un autre (cf. RegistryPolicyGuardTest).
+	add_executable(RegistryPolicyGuardTest RegistryPolicyGuardTest.cpp)
+	target_link_libraries(RegistryPolicyGuardTest PRIVATE veyon-restrictions Qt${QT_MAJOR_VERSION}::Test)
+	add_test(NAME RegistryPolicyGuardTest COMMAND RegistryPolicyGuardTest)
+endif()

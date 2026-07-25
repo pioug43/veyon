@@ -29,8 +29,11 @@ bool setDefaultOutputMuted( bool muted )
 {
 	// Le thread appelant peut déjà avoir initialisé COM (Qt le fait) : dans ce
 	// cas on ne doit surtout pas le désinitialiser en sortant.
+	// S_FALSE = COM était déjà initialisé sur ce thread, mais le compteur a tout
+	// de même été incrémenté : il faut équilibrer par un CoUninitialize().
+	// Seul RPC_E_CHANGED_MODE n'incrémente rien.
 	const auto initResult = CoInitializeEx( nullptr, COINIT_APARTMENTTHREADED );
-	const bool weInitialized = ( initResult == S_OK );
+	const bool weInitialized = ( initResult == S_OK || initResult == S_FALSE );
 	if( initResult != S_OK && initResult != S_FALSE && initResult != RPC_E_CHANGED_MODE )
 	{
 		return false;

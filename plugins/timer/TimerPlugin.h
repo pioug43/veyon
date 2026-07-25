@@ -44,6 +44,7 @@ public:
 		Seconds,		// int : durée du compte à rebours
 		Label,			// QString : intitulé affiché au-dessus du décompte
 		Fullscreen,		// bool : plein écran plutôt qu'un bandeau discret
+		ExpiryAction,	// int : ce que le maître déclenche à l'échéance
 	};
 	Q_ENUM(Argument)
 

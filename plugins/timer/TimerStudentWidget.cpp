@@ -160,8 +160,17 @@ void TimerStudentWidget::updateDisplay()
 		? QStringLiteral("color: #ff6b6b;")
 		: QStringLiteral("color: #f0f0f0;") );
 
+	// Ne repositionner que si la largeur a réellement changé (passage de
+	// « 10:00 » à « 9:59 ») : bouger la fenêtre chaque seconde produirait une
+	// différence d'image à chaque seconde sur chaque poste, donc du trafic VNC
+	// continu pour rien.
 	if( m_fullscreen == false )
 	{
-		placeBanner();		// la largeur change avec le texte
+		const auto width = sizeHint().width();
+		if( width != m_lastBannerWidth )
+		{
+			m_lastBannerWidth = width;
+			placeBanner();
+		}
 	}
 }

@@ -22,76 +22,10 @@
 #include "ComputerControlInterface.h"
 #include "FeatureWorkerManager.h"
 #include "QuizPlugin.h"
+#include "QuizQuestions.h"
 #include "QuizStudentDialog.h"
 #include "VeyonServerInterface.h"
 
-namespace
-{
-
-/**
- * Normalise le tableau de questions reçu de l'appelant et en retire tout ce
- * qui n'a pas à descendre sur le poste — au premier chef un éventuel champ de
- * corrigé. On ne garde que id, type, énoncé et propositions.
- */
-QJsonArray sanitizeQuestions( const QJsonArray& questions, int maximumQuestions )
-{
-	QJsonArray sanitized;
-
-	for( const auto& value : questions )
-	{
-		if( value.isObject() == false || sanitized.count() >= maximumQuestions )
-		{
-			continue;
-		}
-
-		const auto question = value.toObject();
-		const auto text = question.value( QStringLiteral("text") ).toString().trimmed();
-		if( text.isEmpty() )
-		{
-			continue;
-		}
-
-		auto type = question.value( QStringLiteral("type") ).toString();
-		if( type != QStringLiteral("multiple") && type != QStringLiteral("text") )
-		{
-			type = QStringLiteral("single");
-		}
-
-		QJsonArray options;
-		const auto rawOptions = question.value( QStringLiteral("options") ).toArray();
-		for( const auto& option : rawOptions )
-		{
-			const auto label = option.toString().trimmed();
-			if( label.isEmpty() == false )
-			{
-				options.append( label );
-			}
-		}
-
-		// une question à choix sans proposition n'est pas affichable
-		if( type != QStringLiteral("text") && options.count() < 2 )
-		{
-			continue;
-		}
-
-		auto id = question.value( QStringLiteral("id") ).toString().trimmed().left( 64 );
-		if( id.isEmpty() )
-		{
-			id = QString::number( sanitized.count() + 1 );
-		}
-
-		sanitized.append( QJsonObject{
-			{ QStringLiteral("id"), id },
-			{ QStringLiteral("type"), type },
-			{ QStringLiteral("text"), text },
-			{ QStringLiteral("options"), options },
-		} );
-	}
-
-	return sanitized;
-}
-
-}
 
 
 QuizPlugin::QuizPlugin( QObject* parent ) :
@@ -146,7 +80,7 @@ bool QuizPlugin::controlFeature( Feature::Uid featureUid, Operation operation,
 		return false;
 	}
 
-	const auto questions = sanitizeQuestions( document.array(), MaximumQuestions );
+	const auto questions = QuizQuestions::sanitize( document.array(), MaximumQuestions );
 	if( questions.isEmpty() )
 	{
 		vWarning() << "Quiz: aucune question exploitable; envoi refusé";
@@ -167,7 +101,12 @@ bool QuizPlugin::controlFeature( Feature::Uid featureUid, Operation operation,
 		QMutexLocker locker( &m_resultsMutex );
 		for( const auto& controlInterface : std::as_const(targetInterfaces) )
 		{
-			m_results.insert( controlInterface.data(), QVariantMap{
+			auto* const rawInterface = controlInterface.data();
+			// Sans ce suivi, un poste qui ne répond jamais (éteint, changement
+			// de salle) laisserait une entrée orpheline : l'adresse réutilisée
+			// par une autre interface rendrait la copie du poste précédent.
+			trackInterface( rawInterface );
+			m_results.insert( rawInterface, QVariantMap{
 				{ QStringLiteral("quizId"), quizId },
 				{ QStringLiteral("answers"), QVariantMap{} },
 				{ QStringLiteral("finished"), false },
@@ -205,15 +144,7 @@ bool QuizPlugin::handleFeatureMessage( ComputerControlInterface::Pointer compute
 	QMutexLocker locker( &m_resultsMutex );
 
 	auto* const rawInterface = computerControlInterface.data();
-	if( m_trackedRemoteInterfaces.contains( rawInterface ) == false )
-	{
-		m_trackedRemoteInterfaces.insert( rawInterface );
-		connect( rawInterface, &QObject::destroyed, this, [this, rawInterface]() {
-			QMutexLocker resultsLocker( &m_resultsMutex );
-			m_results.remove( rawInterface );
-			m_trackedRemoteInterfaces.remove( rawInterface );
-		} );
-	}
+	trackInterface( rawInterface );
 
 	auto result = m_results.value( rawInterface );
 	result.insert( QStringLiteral("quizId"), message.argument( Argument::QuizId ) );
@@ -237,6 +168,25 @@ bool QuizPlugin::handleFeatureMessage( ComputerControlInterface::Pointer compute
 	m_results.insert( rawInterface, result );
 
 	return true;
+}
+
+
+
+/** Purge l'entrée d'un poste à sa destruction. À appeler sous m_resultsMutex. */
+void QuizPlugin::trackInterface( const ComputerControlInterface* rawInterface )
+{
+	if( m_trackedRemoteInterfaces.contains( rawInterface ) )
+	{
+		return;
+	}
+
+	m_trackedRemoteInterfaces.insert( rawInterface );
+
+	connect( rawInterface, &QObject::destroyed, this, [this, rawInterface]() {
+		QMutexLocker resultsLocker( &m_resultsMutex );
+		m_results.remove( rawInterface );
+		m_trackedRemoteInterfaces.remove( rawInterface );
+	} );
 }
 
 
@@ -314,9 +264,13 @@ bool QuizPlugin::handleFeatureMessage( VeyonWorkerInterface& worker, const Featu
 		const auto document = QJsonDocument::fromJson(
 			message.argument( Argument::Questions ).toString().toUtf8() );
 
+		// Le nettoyage est refait ici, à l'arrivée : le garantir seulement à
+		// l'émission supposerait que tout maître authentifié est bien
+		// intentionné. Rien de superflu à ce que la machine de l'élève ne
+		// conserve, même en mémoire, que ce qu'elle doit afficher.
 		QuizStudentDialog::open( m_quizFeature.uid(), &worker,
 								 message.argument( Argument::QuizId ).toString(),
-								 document.array(),
+								 QuizQuestions::sanitize( document.array(), MaximumQuestions ),
 								 message.argument( Argument::DurationSeconds ).toInt() );
 		return true;
 	}

@@ -270,11 +270,24 @@ QString SurveyResultsWindow::displayName( const ComputerControlInterface* comput
 
 
 
-/** Échappement CSV : guillemets doublés, champ toujours encadré. */
+/**
+ * Échappement CSV : guillemets doublés, champ toujours encadré.
+ *
+ * Une cellule commençant par « = », « + », « - » ou « @ » est interprétée
+ * comme une formule par les tableurs : elle est préfixée d'une apostrophe. Les
+ * réponses viennent des élèves — sans cela, un élève dicterait une formule
+ * exécutée à l'ouverture du fichier par l'enseignant.
+ */
 QString SurveyResultsWindow::csvField( const QString& value )
 {
 	auto escaped = value;
 	escaped.replace( QLatin1Char('"'), QStringLiteral("\"\"") );
+
+	static const QString FormulaStarters = QStringLiteral("=+-@\t\r");
+	if( escaped.isEmpty() == false && FormulaStarters.contains( escaped.at( 0 ) ) )
+	{
+		escaped.prepend( QLatin1Char('\'') );
+	}
 
 	return QStringLiteral("\"%1\"").arg( escaped );
 }

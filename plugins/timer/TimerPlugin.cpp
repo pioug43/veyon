@@ -101,15 +101,27 @@ bool TimerPlugin::controlFeature( Feature::Uid featureUid, Operation operation,
 
 	// L'action d'expiration est tenue par le maître : les postes ne font
 	// qu'afficher le décompte, ce qui évite deux propriétaires du verrouillage.
+	//
+	// L'échéance précédente est annulée SANS CONDITION : sinon un minuteur
+	// « verrouiller » remplacé par un minuteur « ne rien faire » verrouillerait
+	// quand même la salle à son ancienne heure.
+	if( m_expiryTimer == nullptr )
+	{
+		m_expiryTimer = new QTimer( this );
+		m_expiryTimer->setSingleShot( true );
+		connect( m_expiryTimer, &QTimer::timeout, this, &TimerPlugin::triggerExpiryAction );
+	}
+	m_expiryTimer->stop();
+	m_expiryTargets.clear();
+
+	// L'action vient des arguments, pas d'un état laissé par le dernier
+	// dialogue : un minuteur lancé par la Web API n'a aucune raison d'hériter
+	// d'une case cochée par l'enseignant une heure plus tôt.
+	m_expiryAction = arguments.value( argToString( Argument::ExpiryAction ) ).toInt() == int(ExpiryAction::Lock)
+		? ExpiryAction::Lock : ExpiryAction::None;
+
 	if( m_expiryAction != ExpiryAction::None )
 	{
-		if( m_expiryTimer == nullptr )
-		{
-			m_expiryTimer = new QTimer( this );
-			m_expiryTimer->setSingleShot( true );
-			connect( m_expiryTimer, &QTimer::timeout, this, &TimerPlugin::triggerExpiryAction );
-		}
-
 		m_expiryTargets = targetInterfaces;
 		m_expiryTimer->start( seconds * 1000 );
 	}
@@ -161,12 +173,11 @@ bool TimerPlugin::startFeature( VeyonMasterInterface& master, const Feature& fea
 		return true;
 	}
 
-	m_expiryAction = static_cast<ExpiryAction>( expiry->currentData().toInt() );
-
 	return controlFeature( m_timerFeature.uid(), Operation::Start, {
 		{ argToString( Argument::Seconds ), minutes->value() * 60 },
 		{ argToString( Argument::Label ), label->text() },
 		{ argToString( Argument::Fullscreen ), fullscreen->isChecked() },
+		{ argToString( Argument::ExpiryAction ), expiry->currentData().toInt() },
 	}, computerControlInterfaces );
 }
 
@@ -197,6 +208,10 @@ void TimerPlugin::triggerExpiryAction()
 
 	VeyonCore::featureManager().controlFeature( ScreenLockFeatureUid, Operation::Start, {},
 												m_expiryTargets );
+
+	// Ne pas retenir les postes plus longtemps : ces pointeurs partagés
+	// maintiendraient en vie leurs connexions VNC bien après la séance.
+	m_expiryTargets.clear();
 }
 
 

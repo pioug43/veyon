@@ -45,6 +45,18 @@
 #include <X11/extensions/scrnsaver.h>
 #endif
 
+namespace
+{
+
+/** Absorbe les erreurs X11 de la relève d'activité (fenêtre disparue entre
+ *  deux requêtes) : la valeur manquante vaut mieux qu'un serveur qui sort. */
+int ignoreX11Error( Display*, XErrorEvent* )
+{
+	return 0;
+}
+
+}
+
 
 LinuxSessionFunctions::SessionId LinuxSessionFunctions::currentSessionId()
 {
@@ -98,6 +110,13 @@ QString LinuxSessionFunctions::currentSessionActiveApplication() const
 
 	QString title;
 
+	// Le gestionnaire d'erreur X11 par défaut appelle exit() : une requête sur
+	// une fenêtre disparue entre la lecture de _NET_ACTIVE_WINDOW et celle de
+	// son titre — cas courant, l'utilisateur ferme sa fenêtre — tuerait le
+	// serveur Veyon tout entier. Cette relève a lieu chaque seconde : ce n'est
+	// pas une question de « si » mais de « quand ».
+	auto* const previousErrorHandler = XSetErrorHandler( ignoreX11Error );
+
 	const auto activeWindowAtom = XInternAtom( display, "_NET_ACTIVE_WINDOW", True );
 	const auto nameAtom = XInternAtom( display, "_NET_WM_NAME", True );
 	const auto utf8Atom = XInternAtom( display, "UTF8_STRING", True );
@@ -134,6 +153,11 @@ QString LinuxSessionFunctions::currentSessionActiveApplication() const
 		}
 	}
 
+	// vider la file avant de rendre la main : une erreur encore en transit
+	// serait sinon traitée par le gestionnaire suivant, quel qu'il soit
+	XSync( display, False );
+	XSetErrorHandler( previousErrorHandler );
+
 	XCloseDisplay( display );
 
 	return title;
@@ -149,6 +173,8 @@ int LinuxSessionFunctions::currentSessionIdleTime() const
 	{
 		return InvalidIdleTime;
 	}
+
+	auto* const previousErrorHandler = XSetErrorHandler( ignoreX11Error );
 
 	int eventBase = 0;
 	int errorBase = 0;
@@ -168,6 +194,9 @@ int LinuxSessionFunctions::currentSessionIdleTime() const
 			XFree( info );
 		}
 	}
+
+	XSync( display, False );
+	XSetErrorHandler( previousErrorHandler );
 
 	XCloseDisplay( display );
 

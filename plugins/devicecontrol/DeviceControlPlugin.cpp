@@ -17,6 +17,8 @@
 #include <QJsonObject>
 #include <QMutexLocker>
 #include <QProcess>
+#include <QThreadPool>
+#include <QTimer>
 
 #include "ComputerControlInterface.h"
 #include "DeviceControlPlugin.h"
@@ -77,40 +79,58 @@ QString webcamStateFile()
 DeviceControlPlugin::DeviceControlPlugin( QObject* parent ) :
 	QObject( parent ),
 	m_muteAudioFeature( QStringLiteral("MuteAudio"),
-						Feature::Flag::Mode | Feature::Flag::AllComponents,
+						Feature::Flag::Action | Feature::Flag::AllComponents,
 						Feature::Uid( "e1b7d340-92af-4c65-8d13-6a0f5b2c7e94" ),
 						Feature::Uid(),
 						tr( "Mute audio" ), tr( "Restore audio" ),
 						tr( "Mute the sound output of all computers." ),
 						QStringLiteral(":/core/media-playback-stop.png") ),
 	m_blockUsbFeature( QStringLiteral("BlockUsbStorage"),
-					   Feature::Flag::Mode | Feature::Flag::AllComponents,
+					   Feature::Flag::Action | Feature::Flag::AllComponents,
 					   Feature::Uid( "4f8a1c07-63be-4d92-a5f1-8c204e7b93d6" ),
 					   Feature::Uid(),
 					   tr( "Block USB storage" ), tr( "Allow USB storage" ),
 					   tr( "Prevent the use of USB flash drives and other removable storage." ),
 					   QStringLiteral(":/core/edit-delete.png") ),
 	m_blockPrintingFeature( QStringLiteral("BlockPrinting"),
-							Feature::Flag::Mode | Feature::Flag::AllComponents,
+							Feature::Flag::Action | Feature::Flag::AllComponents,
 							Feature::Uid( "9d05e2b8-71c4-4a3f-b628-0e5f1a94c37b" ),
 							Feature::Uid(),
 							tr( "Block printing" ), tr( "Allow printing" ),
 							tr( "Stop the printing service so that nothing can be printed." ),
 							QStringLiteral(":/core/edit-delete.png") ),
 	m_blockWebcamFeature( QStringLiteral("BlockWebcam"),
-						  Feature::Flag::Mode | Feature::Flag::AllComponents,
+						  Feature::Flag::Action | Feature::Flag::AllComponents,
 						  Feature::Uid( "2a63f9d1-08e5-471c-9b40-d7c3e85216af" ),
 						  Feature::Uid(),
 						  tr( "Block webcams" ), tr( "Allow webcams" ),
 						  tr( "Deny access to the cameras of all computers." ),
 						  QStringLiteral(":/core/edit-delete.png") ),
-	m_features( { m_muteAudioFeature, m_blockUsbFeature, m_blockPrintingFeature, m_blockWebcamFeature } )
+	m_releaseAllFeature( QStringLiteral("ReleaseDeviceControls"),
+						 Feature::Flag::Action | Feature::Flag::AllComponents,
+						 Feature::Uid( "8b17c4d9-3f06-4e28-95a1-d0c62b743e85" ),
+						 Feature::Uid(),
+						 tr( "Restore devices" ), {},
+						 tr( "Lift every device control: restore audio, USB storage, "
+							 "printing and webcams." ),
+						 QStringLiteral(":/core/dialog-ok-apply.png") ),
+	m_features( { m_muteAudioFeature, m_blockUsbFeature, m_blockPrintingFeature,
+				  m_blockWebcamFeature, m_releaseAllFeature } )
 {
+	m_servicePool.setMaxThreadCount( 1 );
+
 	if( isEndpointComponent() )
 	{
 		// Un arrêt brutal a pu laisser un blocage posé : le poste ne doit pas
-		// redémarrer muet, sans clé USB ni imprimante.
+		// redémarrer muet, sans clé USB ni imprimante. Contrepartie assumée :
+		// une simple réouverture de session lève aussi les contrôles, qu'il
+		// faut alors réappliquer depuis la console ou par la Web API.
 		cleanupResidualState();
+
+		m_arbitrationTimer = new QTimer( this );
+		connect( m_arbitrationTimer, &QTimer::timeout,
+				 this, &DeviceControlPlugin::checkExamModeArbitration );
+		m_arbitrationTimer->start( ArbitrationIntervalMs );
 	}
 }
 
@@ -196,23 +216,62 @@ bool DeviceControlPlugin::examModeActive()
 
 
 
+/**
+ * Le mode examen pose le même blocage USB, avec son propre état de
+ * restauration. S'il démarre après nous, la levée des deux dans le désordre
+ * laisserait l'USB coupé sans que plus personne ne le revendique : on s'efface
+ * dès qu'on détecte un examen.
+ */
+void DeviceControlPlugin::checkExamModeArbitration()
+{
+	if( m_activeDevices.contains( int(Device::UsbStorage) ) == false || examModeActive() == false )
+	{
+		return;
+	}
+
+	vInfo() << "DeviceControl: mode examen détecté; levée du blocage USB";
+
+	QString errorCode;
+	applyUsbBlocking( false, &errorCode );
+	m_activeDevices.remove( int(Device::UsbStorage) );
+	m_deviceStatus.insert( int(Device::UsbStorage), QStringLiteral("EXAM_MODE_ACTIVE") );
+}
+
+
+
 bool DeviceControlPlugin::controlFeature( Feature::Uid featureUid, Operation operation,
 										  const QVariantMap& arguments,
 										  const ComputerControlInterfaceList& computerControlInterfaces )
 {
 	Q_UNUSED(arguments)
 
-	bool found = false;
-	const auto device = deviceOfFeature( featureUid, &found );
-	if( found == false )
-	{
-		return false;
-	}
-
 	auto targetInterfaces = computerControlInterfaces;
 	targetInterfaces.removeLocalHostInterfaces();		// ne jamais se couper le son à soi-même
 
 	if( operation != Operation::Start && operation != Operation::Stop )
+	{
+		return false;
+	}
+
+	// « Rétablir » lève les quatre contrôles d'un coup : c'est la sortie de
+	// secours depuis la console, où ces contrôles ne sont pas des modes que l'on
+	// bascule (cf. stopFeature).
+	if( featureUid == m_releaseAllFeature.uid() )
+	{
+		for( const auto device : { Device::Audio, Device::UsbStorage,
+								   Device::Printing, Device::Webcam } )
+		{
+			FeatureMessage release{ featureOfDevice( device ), FeatureCommand::Release };
+			release.addArgument( Argument::Device, deviceName( device ) );
+			sendFeatureMessage( release, targetInterfaces );
+		}
+
+		return true;
+	}
+
+	bool found = false;
+	const auto device = deviceOfFeature( featureUid, &found );
+	if( found == false )
 	{
 		return false;
 	}
@@ -224,6 +283,19 @@ bool DeviceControlPlugin::controlFeature( Feature::Uid featureUid, Operation ope
 	sendFeatureMessage( message, targetInterfaces );
 
 	return true;
+}
+
+
+
+bool DeviceControlPlugin::stopFeature( VeyonMasterInterface& master, const Feature& feature,
+									   const ComputerControlInterfaceList& computerControlInterfaces )
+{
+	Q_UNUSED(master)
+	Q_UNUSED(feature)
+	Q_UNUSED(computerControlInterfaces)
+
+	// Voir l'en-tête : un arrêt global ne doit pas lever ces contrôles.
+	return false;
 }
 
 
@@ -350,18 +422,24 @@ QVariantMap DeviceControlPlugin::featureStatus( Feature::Uid featureUid,
 
 
 
-FeatureMessage DeviceControlPlugin::statusMessage( Device device ) const
+Feature::Uid DeviceControlPlugin::featureOfDevice( Device device ) const
 {
-	auto uid = m_muteAudioFeature.uid();
 	switch( device )
 	{
-	case Device::Audio: uid = m_muteAudioFeature.uid(); break;
-	case Device::UsbStorage: uid = m_blockUsbFeature.uid(); break;
-	case Device::Printing: uid = m_blockPrintingFeature.uid(); break;
-	case Device::Webcam: uid = m_blockWebcamFeature.uid(); break;
+	case Device::Audio: return m_muteAudioFeature.uid();
+	case Device::UsbStorage: return m_blockUsbFeature.uid();
+	case Device::Printing: return m_blockPrintingFeature.uid();
+	case Device::Webcam: return m_blockWebcamFeature.uid();
 	}
 
-	FeatureMessage message{ uid, FeatureCommand::DeviceStatus };
+	return m_muteAudioFeature.uid();
+}
+
+
+
+FeatureMessage DeviceControlPlugin::statusMessage( Device device ) const
+{
+	FeatureMessage message{ featureOfDevice( device ), FeatureCommand::DeviceStatus };
 	message.addArgument( Argument::Device, deviceName( device ) )
 		.addArgument( Argument::Status, m_deviceStatus.value( int(device), QStringLiteral("IDLE") ) )
 		.addArgument( Argument::Timestamp, QDateTime::currentMSecsSinceEpoch() );
@@ -527,10 +605,13 @@ bool DeviceControlPlugin::applyUsbBlocking( bool blocked, QString* errorCode )
 	QDir().mkpath( QFileInfo( usbRuleFile() ).absolutePath() );
 
 	QSaveFile file( usbRuleFile() );
+	// ATTR{} écrit sur le périphérique de l'événement : viser SUBSYSTEM=="block"
+	// ciblerait /sys/block/sdX, qui n'a pas d'attribut « authorized ». C'est le
+	// périphérique USB lui-même qu'il faut désautoriser.
 	const auto rule = QByteArrayLiteral(
 		"# Posée par Veyon (plugin DeviceControl) - retirée à la levée du blocage\n"
-		"ACTION==\"add\", SUBSYSTEMS==\"usb\", SUBSYSTEM==\"block\", ENV{ID_USB_DRIVER}==\"usb-storage\", "
-		"ATTR{authorized}=\"0\"\n" );
+		"ACTION==\"add\", SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_device\", "
+		"ENV{ID_USB_DRIVER}==\"usb-storage\", ATTR{authorized}=\"0\"\n" );
 	if( file.open( QIODevice::WriteOnly ) == false ||
 		file.write( rule ) != rule.size() || file.commit() == false )
 	{
@@ -555,20 +636,50 @@ bool DeviceControlPlugin::applyUsbBlocking( bool blocked, QString* errorCode )
 
 
 
-/** Arrête ou redémarre le service d'impression du poste. */
+/**
+ * Arrête ou redémarre le service d'impression du poste.
+ *
+ * L'arrêt/démarrage est délégué à un fil séparé : sous Windows, l'attente de
+ * transition du gestionnaire de services n'est pas bornée, et un spouleur
+ * bloqué sur un travail figerait la boucle qui pompe aussi le flux VNC — le
+ * poste apparaîtrait planté au maître.
+ */
 bool DeviceControlPlugin::applyPrintingBlocking( bool blocked )
 {
-	auto& serviceFunctions = VeyonCore::platform().serviceFunctions();
 	const auto service = printServiceName();
 
-	if( serviceFunctions.isRegistered( service ) == false )
+	// isRegistered() n'est pas implémenté sous Linux (il renvoie toujours faux
+	// et journalise une erreur) : s'y fier ferait croire à l'absence de service
+	// d'impression et le plugin annoncerait un blocage qui n'a pas eu lieu.
+	auto& serviceFunctions = VeyonCore::platform().serviceFunctions();
+	const bool wasRunning = serviceFunctions.isRunning( service );
+
+	if( blocked )
 	{
-		// pas de service d'impression : rien à bloquer, ce n'est pas un échec
-		vInfo() << "DeviceControl: aucun service d'impression" << service << "sur ce poste";
+		if( wasRunning == false )
+		{
+			// déjà à l'arrêt : ne rien faire, et surtout ne pas le redémarrer
+			// à la levée — il était peut-être coupé volontairement
+			m_printServiceWasRunning = false;
+			return true;
+		}
+		m_printServiceWasRunning = true;
+	}
+	else if( m_printServiceWasRunning == false )
+	{
 		return true;
 	}
 
-	return blocked ? serviceFunctions.stop( service ) : serviceFunctions.start( service );
+	m_servicePool.start( [service, blocked]() {
+		auto& functions = VeyonCore::platform().serviceFunctions();
+		if( blocked ? functions.stop( service ) : functions.start( service ) )
+		{
+			return;
+		}
+		vWarning() << "DeviceControl: transition du service" << service << "en échec";
+	} );
+
+	return true;
 }
 
 
@@ -624,6 +735,15 @@ bool DeviceControlPlugin::applyWebcamBlocking( bool blocked )
 	if( videoDevices.isEmpty() )
 	{
 		vInfo() << "DeviceControl: aucun périphérique vidéo sur ce poste";
+		return true;
+	}
+
+	// Un blocage déjà posé ne doit pas être « re-sauvegardé » : on écrirait les
+	// droits actuels (000) comme droits d'origine, et la webcam resterait
+	// inutilisable après la levée. Le cas arrive dès qu'un second maître, ou un
+	// re-push de la Web API, réapplique le contrôle.
+	if( QFile::exists( webcamStateFile() ) )
+	{
 		return true;
 	}
 

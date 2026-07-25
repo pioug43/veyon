@@ -44,5 +44,6 @@ private:
 	QTimer* m_ticker{nullptr};
 
 	int m_remainingSeconds;
+	int m_lastBannerWidth{-1};
 	const bool m_fullscreen;
 };

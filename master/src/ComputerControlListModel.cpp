@@ -324,16 +324,24 @@ void ComputerControlListModel::updateUser( const QModelIndex& index )
 
 void ComputerControlListModel::updateSessionInfo(const QModelIndex& index)
 {
-	// DisplayRole/SizeHintRole en plus de ToolTipRole : la légende porte
-	// désormais l'application active et l'inactivité, qui viennent de la
-	// session — sans cela la deuxième ligne ne serait jamais rafraîchie.
+	// DisplayRole en plus de ToolTipRole : la légende porte désormais
+	// l'application active et l'inactivité, qui viennent de la session — sans
+	// cela la deuxième ligne ne serait jamais rafraîchie.
+	//
+	// SizeHintRole est délibérément ABSENT : la durée de session change chaque
+	// seconde, donc ce signal partirait une fois par seconde et par poste, et
+	// relancerait sans cesse le minuteur anti-rebond de mise en page (250 ms).
+	// Au-delà de quatre postes connectés, la mise en page ne se ferait plus
+	// jamais. La hauteur des vignettes est de toute façon dictée par la
+	// miniature, et les cas qui la changent réellement (arrivée d'un
+	// utilisateur, taille d'icône) émettent déjà ce rôle de leur côté.
 	if (uidRoleContent() == UidRoleContent::SessionMetaDataHash)
 	{
-		Q_EMIT dataChanged(index, index, {Qt::DisplayRole, Qt::ToolTipRole, Qt::SizeHintRole, UidRole});
+		Q_EMIT dataChanged(index, index, {Qt::DisplayRole, Qt::ToolTipRole, UidRole});
 	}
 	else
 	{
-		Q_EMIT dataChanged(index, index, {Qt::DisplayRole, Qt::ToolTipRole, Qt::SizeHintRole});
+		Q_EMIT dataChanged(index, index, {Qt::DisplayRole, Qt::ToolTipRole});
 	}
 
 	auto controlInterface = computerControlInterface( index );

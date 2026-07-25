@@ -53,6 +53,14 @@ void RaiseHandStudentWidget::open( Feature::Uid featureUid, VeyonWorkerInterface
 	{
 		s_instance = new RaiseHandStudentWidget( featureUid, worker );
 	}
+	else
+	{
+		// Réactivation du mode : le maître repart d'une file vide, donc une
+		// demande encore affichée ici serait invisible pour lui. Réarmer le
+		// bouton évite à l'élève de devoir cliquer deux fois pour être vu.
+		s_instance->m_raised = false;
+		s_instance->updateButton();
+	}
 
 	s_instance->show();
 	s_instance->raise();

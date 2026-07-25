@@ -121,6 +121,8 @@ public:
 	static constexpr int MaximumDurationSeconds = 6 * 60 * 60;
 
 private:
+	void trackInterface( const ComputerControlInterface* rawInterface );
+
 	const Feature m_quizFeature;
 	const FeatureList m_features;
 

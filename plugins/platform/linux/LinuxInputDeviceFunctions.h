@@ -8,9 +8,12 @@
 
 #pragma once
 
+#include <QSet>
+
 #include "PlatformInputDeviceFunctions.h"
 
 class InputBlockHelper;
+class QSocketNotifier;
 
 class LinuxInputDeviceFunctions : public PlatformInputDeviceFunctions
 {
@@ -26,6 +29,8 @@ public:
 private:
 	bool grabX11InputDevices();
 	void ungrabX11InputDevices();
+	int grabPendingX11Devices();
+	void processX11HierarchyEvents();
 
 	void disableInputDevicesWayland();
 	void enableInputDevicesWayland();
@@ -39,4 +44,11 @@ private:
 	// cette connexion se ferme, y compris si veyon-server meurt. C'est tout l'intérêt
 	// par rapport à l'ancienne keymap vide, qui restait en place après un crash.
 	void* m_x11GrabDisplay{nullptr};
+
+	// Un grab XInput2 porte sur un périphérique précis : sans surveillance, un clavier
+	// ou une souris branché PENDANT un blocage échapperait à celui-ci. On s'abonne donc
+	// à XI_HierarchyChanged pour saisir les périphériques qui apparaissent.
+	QSocketNotifier* m_x11EventNotifier{nullptr};
+	QSet<int> m_grabbedX11Devices;
+	int m_xiOpcode{0};
 };

@@ -30,7 +30,11 @@
 // Les en-têtes X11 doivent rester APRÈS les en-têtes projet/Qt : leurs macros
 // (None, Success, Bool, Status…) entrent en conflit avec Qt. Ce fichier est pour
 // la même raison exclu du build unifié (cf. CMakeLists.txt).
+#include <QAbstractEventDispatcher>
+#include <QSocketNotifier>
+
 #include <cstring>
+#include <utility>
 
 #include <X11/Xlib.h>
 #include <X11/extensions/XInput2.h>
@@ -115,48 +119,31 @@ static bool isGrabbableSlaveDevice( const XIDeviceInfo& device )
 
 
 
-bool LinuxInputDeviceFunctions::grabX11InputDevices()
+// Saisit tout périphérique éligible pas encore saisi. Sert à la fois au blocage
+// initial et aux périphériques branchés à chaud. Renvoie le nombre d'échecs.
+int LinuxInputDeviceFunctions::grabPendingX11Devices()
 {
-	if( m_x11GrabDisplay )
-		return true;
-
-	auto* display = XOpenDisplay( nullptr );
-	if( display == nullptr )
-	{
-		vCritical() << "cannot open X display for input device grabbing";
-		return false;
-	}
-
-	// XIGrabDevice exige XInput2 ≥ 2.0 : sans la vérification, XIQueryDevice
-	// échouerait de façon opaque sur un serveur X sans l'extension.
-	int xiMajor = 2;
-	int xiMinor = 0;
-	if( XIQueryVersion( display, &xiMajor, &xiMinor ) != Success )
-	{
-		vCritical() << "XInput2 extension not available - cannot block input devices";
-		XCloseDisplay( display );
-		return false;
-	}
-
-	m_x11GrabDisplay = display;
+	auto* display = static_cast<Display *>( m_x11GrabDisplay );
 
 	int deviceCount = 0;
 	auto* devices = XIQueryDevice( display, XIAllDevices, &deviceCount );
 	if( devices == nullptr )
 	{
 		vCritical() << "cannot enumerate XInput2 devices";
-		return false;
+		return 1;
 	}
 
-	int grabbed = 0;
 	int failed = 0;
 
 	for( int i = 0; i < deviceCount; ++i )
 	{
 		const auto& device = devices[i];
 
-		if( isGrabbableSlaveDevice( device ) == false )
+		if( isGrabbableSlaveDevice( device ) == false ||
+			m_grabbedX11Devices.contains( device.deviceid ) )
+		{
 			continue;
+		}
 
 		// mask vide : les événements sont routés vers nous sans qu'on en sélectionne
 		// aucun, donc ils sont simplement jetés — c'est le blocage.
@@ -173,7 +160,7 @@ bool LinuxInputDeviceFunctions::grabX11InputDevices()
 										  False, &mask );
 		if( result == GrabSuccess )
 		{
-			++grabbed;
+			m_grabbedX11Devices.insert( device.deviceid );
 		}
 		else
 		{
@@ -186,7 +173,134 @@ bool LinuxInputDeviceFunctions::grabX11InputDevices()
 	XIFreeDeviceInfo( devices );
 	XFlush( display );
 
-	return failed == 0 && grabbed > 0;
+	return failed;
+}
+
+
+
+// Un périphérique branché pendant un blocage doit être saisi à son tour, sans quoi
+// il suffirait de brancher un clavier USB pour contourner le verrouillage d'écran.
+void LinuxInputDeviceFunctions::processX11HierarchyEvents()
+{
+	auto* display = static_cast<Display *>( m_x11GrabDisplay );
+	if( display == nullptr )
+		return;
+
+	bool hierarchyChanged = false;
+
+	while( XPending( display ) > 0 )
+	{
+		XEvent event;
+		XNextEvent( display, &event );
+
+		if( event.type != GenericEvent || event.xcookie.extension != m_xiOpcode )
+			continue;
+
+		auto cookie = event.xcookie;
+		if( XGetEventData( display, &cookie ) == False )
+			continue;
+
+		if( cookie.evtype == XI_HierarchyChanged )
+		{
+			hierarchyChanged = true;
+		}
+
+		XFreeEventData( display, &cookie );
+	}
+
+	if( hierarchyChanged )
+	{
+		// Les identifiants des périphériques disparus sont oubliés, sinon un
+		// identifiant réattribué par le serveur X serait considéré comme déjà saisi.
+		int deviceCount = 0;
+		if( auto* devices = XIQueryDevice( display, XIAllDevices, &deviceCount ) )
+		{
+			QSet<int> present;
+			for( int i = 0; i < deviceCount; ++i )
+			{
+				present.insert( devices[i].deviceid );
+			}
+			XIFreeDeviceInfo( devices );
+			m_grabbedX11Devices.intersect( present );
+		}
+
+		if( grabPendingX11Devices() > 0 )
+		{
+			vCritical() << "failed to grab newly appeared input device - the user may "
+						   "have regained control of this computer";
+		}
+	}
+}
+
+
+
+bool LinuxInputDeviceFunctions::grabX11InputDevices()
+{
+	if( m_x11GrabDisplay )
+		return true;
+
+	auto* display = XOpenDisplay( nullptr );
+	if( display == nullptr )
+	{
+		vCritical() << "cannot open X display for input device grabbing";
+		return false;
+	}
+
+	// L'opcode est nécessaire pour reconnaître les GenericEvent de XInput2.
+	int xiEvent = 0;
+	int xiError = 0;
+	if( XQueryExtension( display, "XInputExtension", &m_xiOpcode, &xiEvent, &xiError ) == False )
+	{
+		vCritical() << "XInput extension not available - cannot block input devices";
+		XCloseDisplay( display );
+		return false;
+	}
+
+	// XIGrabDevice exige XInput2 ≥ 2.0 : sans la vérification, XIQueryDevice
+	// échouerait de façon opaque sur un serveur X sans l'extension.
+	int xiMajor = 2;
+	int xiMinor = 0;
+	if( XIQueryVersion( display, &xiMajor, &xiMinor ) != Success )
+	{
+		vCritical() << "XInput2 extension not available - cannot block input devices";
+		XCloseDisplay( display );
+		return false;
+	}
+
+	m_x11GrabDisplay = display;
+	m_grabbedX11Devices.clear();
+
+	// S'abonner AVANT la saisie initiale : un périphérique apparaissant entre les deux
+	// serait sinon ignoré jusqu'au prochain changement de hiérarchie.
+	unsigned char hierarchyMaskBits[XIMaskLen(XI_LASTEVENT)]{};
+	XISetMask( hierarchyMaskBits, XI_HierarchyChanged );
+
+	XIEventMask hierarchyMask{};
+	hierarchyMask.deviceid = XIAllDevices;
+	hierarchyMask.mask_len = sizeof( hierarchyMaskBits );
+	hierarchyMask.mask = hierarchyMaskBits;
+	XISelectEvents( display, DefaultRootWindow( display ), &hierarchyMask, 1 );
+	XFlush( display );
+
+	const auto failed = grabPendingX11Devices();
+
+	// Le notifier suppose une boucle d'événements dans le thread appelant. Sans elle
+	// la saisie initiale reste effective, seul le suivi à chaud est perdu — on évite
+	// alors de le créer, ce qui déclencherait un avertissement Qt sans rien apporter.
+	if( QAbstractEventDispatcher::instance() != nullptr )
+	{
+		m_x11EventNotifier = new QSocketNotifier( ConnectionNumber( display ),
+												  QSocketNotifier::Read );
+		QObject::connect( m_x11EventNotifier, &QSocketNotifier::activated,
+						  [this]() { processX11HierarchyEvents(); } );
+	}
+	else
+	{
+		vWarning() << "no event dispatcher in this thread - input devices plugged in "
+					  "while blocking is active will not be grabbed";
+	}
+
+	return failed == 0 && m_grabbedX11Devices.isEmpty() == false;
 }
 
 
@@ -196,23 +310,16 @@ void LinuxInputDeviceFunctions::ungrabX11InputDevices()
 	if( m_x11GrabDisplay == nullptr )
 		return;
 
+	delete m_x11EventNotifier;
+	m_x11EventNotifier = nullptr;
+
 	auto* display = static_cast<Display *>( m_x11GrabDisplay );
 
-	int deviceCount = 0;
-	auto* devices = XIQueryDevice( display, XIAllDevices, &deviceCount );
-
-	for( int i = 0; devices != nullptr && i < deviceCount; ++i )
+	for( auto deviceId : std::as_const( m_grabbedX11Devices ) )
 	{
-		if( isGrabbableSlaveDevice( devices[i] ) )
-		{
-			XIUngrabDevice( display, devices[i].deviceid, CurrentTime );
-		}
+		XIUngrabDevice( display, deviceId, CurrentTime );
 	}
-
-	if( devices != nullptr )
-	{
-		XIFreeDeviceInfo( devices );
-	}
+	m_grabbedX11Devices.clear();
 
 	// La fermeture de la connexion relâcherait de toute façon tous les grabs.
 	XCloseDisplay( display );

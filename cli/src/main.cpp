@@ -24,6 +24,9 @@
 
 #include <QApplication>
 
+#include <memory>
+#include <utility>
+
 #include <openssl/crypto.h>
 
 #include "ConfigCommands.h"
@@ -39,20 +42,23 @@ int main( int argc, char **argv )
 {
 	VeyonCore::setupApplicationParameters();
 
-	QCoreApplication* app = nullptr;
+	std::unique_ptr<QCoreApplication> app{};
 
 #ifdef Q_OS_LINUX
 	// do not create graphical application if DISPLAY is not available
 	if( qEnvironmentVariableIsSet( "DISPLAY" ) == false )
 	{
-		app = new QCoreApplication( argc, argv );
+		app = std::make_unique<QCoreApplication>( argc, argv );
 	}
 	else
 	{
-		app = new QApplication( argc, argv );
+		app = std::make_unique<QApplication>( argc, argv );
 	}
 #else
-	app = new QApplication( argc, argv );
+	// Il FAUT une QApplication ici : « veyon-cli remoteaccess view|control » crée un
+	// RemoteAccessWidget (un QWidget) puis appelle qApp->exec(). Avec une simple
+	// QCoreApplication, Qt avorte (« Cannot create a QWidget without QApplication »).
+	app = std::make_unique<QApplication>( argc, argv );
 #endif
 
 	const auto arguments = QCoreApplication::arguments();
@@ -62,7 +68,6 @@ int main( int argc, char **argv )
 		if( arguments.last() == QLatin1String("-v") || arguments.last() == QLatin1String("--version") )
 		{
 			CommandLineIO::print( VeyonCore::versionString() );
-			delete app;
 			return 0;
 		}
 		if( arguments.last() == QLatin1String("about") )
@@ -73,7 +78,6 @@ int main( int argc, char **argv )
 								  arg( QLatin1String(QT_VERSION_STR) ).
 								  arg( QSysInfo::buildAbi() ) );
 			CommandLineIO::print( QStringLiteral("OpenSSL: %1").arg( QLatin1String(SSLeay_version(SSLEAY_VERSION)) ) );
-			delete app;
 			return 0;
 		}
 	}
@@ -84,12 +88,14 @@ int main( int argc, char **argv )
 		qputenv( Logger::logLevelEnvironmentVariable(), QByteArray::number( static_cast<int>(Logger::LogLevel::Nothing) ) );
 	}
 
-	auto core = new VeyonCore( app, VeyonCore::Component::CLI, QStringLiteral("CLI") );
-	VeyonCore::pluginManager().registerExtraPluginInterface( new ConfigCommands( core ) );
-	VeyonCore::pluginManager().registerExtraPluginInterface( new FeatureCommands( core ) );
-	VeyonCore::pluginManager().registerExtraPluginInterface( new PluginCommands( core ) );
-	VeyonCore::pluginManager().registerExtraPluginInterface( new ServiceControlCommands( core ) );
-	VeyonCore::pluginManager().registerExtraPluginInterface( new ShellCommands( core ) );
+	// unique_ptr : core et app vivent jusqu'au return, donc les plugins qui
+	// appartiennent à core (it.key() plus bas) restent valides dans tout le switch.
+	const auto core = std::make_unique<VeyonCore>( app.get(), VeyonCore::Component::CLI, QStringLiteral("CLI") );
+	VeyonCore::pluginManager().registerExtraPluginInterface( new ConfigCommands( core.get() ) );
+	VeyonCore::pluginManager().registerExtraPluginInterface( new FeatureCommands( core.get() ) );
+	VeyonCore::pluginManager().registerExtraPluginInterface( new PluginCommands( core.get() ) );
+	VeyonCore::pluginManager().registerExtraPluginInterface( new ServiceControlCommands( core.get() ) );
+	VeyonCore::pluginManager().registerExtraPluginInterface( new ShellCommands( core.get() ) );
 
 	QHash<CommandLinePluginInterface *, QObject *> commandLinePluginInterfaces;
 	const auto pluginObjects = VeyonCore::pluginManager().pluginObjects();
@@ -135,26 +141,19 @@ int main( int argc, char **argv )
 			}
 			else
 			{
-				runResult = CommandLinePluginInterface::NotEnoughArguments;
+				runResult = CommandLinePluginInterface::EmptyCommand;
 			}
 
-			// Capturer avant « delete core » : les plugins (it.key()) lui appartiennent,
-			// le cas Unknown les lisait APRÈS libération (use-after-free, p.ex. « veyon-cli
-			// <module> help »).
-			QStringList availableCommands;
-			if( runResult == CommandLinePluginInterface::Unknown )
-			{
+			const auto printCommands = [=]() {
 				auto commands = it.key()->commands();
 				std::sort( commands.begin(), commands.end() );
-				for( const auto& command : commands )
-				{
-					availableCommands.append(
-						QStringLiteral("    %1 - %2").arg( command, it.key()->commandHelp( command ) ) );
-				}
-			}
 
-			delete core;
-			delete app;
+				CommandLineIO::print( VeyonCore::tr( "Available commands:" ) );
+				for( const auto& command : std::as_const(commands) )
+				{
+					CommandLineIO::print( QStringLiteral("    %1 - %2").arg( command, it.key()->commandHelp( command ) ) );
+				}
+			};
 
 			switch( runResult )
 			{
@@ -166,9 +165,6 @@ int main( int argc, char **argv )
 			case CommandLinePluginInterface::Failed:
 				CommandLineIO::print( VeyonCore::tr( "[FAIL]" ) );
 				return -1;
-			case CommandLinePluginInterface::InvalidCommand:
-				CommandLineIO::error( VeyonCore::tr( "Invalid command!" ) );
-				break;
 			case CommandLinePluginInterface::InvalidArguments:
 				CommandLineIO::error( VeyonCore::tr( "Invalid arguments given" ) );
 				return -1;
@@ -176,20 +172,26 @@ int main( int argc, char **argv )
 				CommandLineIO::error( VeyonCore::tr( "Not enough arguments given - "
 													 "use \"%1 help\" for more information" ).arg( module ) );
 				return -1;
+			case CommandLinePluginInterface::EmptyCommand:
+				CommandLineIO::error( VeyonCore::tr( "No command given" ) );
+				printCommands();
+				return -1;
+			case CommandLinePluginInterface::InvalidCommand:
+				CommandLineIO::error( VeyonCore::tr( "Invalid command given" ) );
+				printCommands();
+				return -1;
 			case CommandLinePluginInterface::NotLicensed:
 				CommandLineIO::error( VeyonCore::tr( "Plugin not licensed" ) );
 				return -1;
 			case CommandLinePluginInterface::Unknown:
-			{
-				CommandLineIO::print( VeyonCore::tr( "Available commands:" ) );
-				for( const auto& line : availableCommands )
-				{
-					CommandLineIO::print( line );
-				}
+				// « veyon-cli <module> help » pour un module sans handle_help() (config,
+				// plugin, service, shell, testing, webapi) retombe ici : on liste les
+				// commandes. Upstream (8b30f80c) a fusionné ce cas dans default:, ce qui
+				// remplace la liste par « Unknown command result » pour ces 6 modules.
+				printCommands();
 				return -1;
-			}
 			default:
-				CommandLineIO::error( VeyonCore::tr( "Unknown result!" ) );
+				CommandLineIO::error( VeyonCore::tr( "Unknown command result" ) );
 				return -1;
 			}
 		}
@@ -217,9 +219,6 @@ int main( int argc, char **argv )
 	std::sort( modulesHelpStrings.begin(), modulesHelpStrings.end() );
 	std::for_each( modulesHelpStrings.begin(), modulesHelpStrings.end(), [](const QString& s) {
 		CommandLineIO::print( QStringLiteral( "    " ) + s ); } );
-
-	delete core;
-	delete app;
 
 	return rc;
 }

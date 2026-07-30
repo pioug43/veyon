@@ -1,5 +1,7 @@
 if(WITH_TESTS AND VEYON_BUILD_LINUX)
 
+	include(SetDefaultTargetProperties)
+
 	find_package(X11 REQUIRED)
 
 	#
@@ -27,6 +29,8 @@ if(WITH_TESTS AND VEYON_BUILD_LINUX)
 		${X11_XTest_LIB}
 	)
 
+	set_test_target_properties(LinuxKeyboardMappingTest)
+
 	add_test(NAME LinuxKeyboardMappingTest COMMAND LinuxKeyboardMappingTest)
 
 	#
@@ -42,6 +46,8 @@ if(WITH_TESTS AND VEYON_BUILD_LINUX)
 		Qt${QT_MAJOR_VERSION}::Core
 	)
 
+	set_test_target_properties(PipeWireVncServerTest)
+
 	add_test(NAME PipeWireVncServerTest COMMAND PipeWireVncServerTest)
 
 	add_executable(VncProtocolRobustnessTest
@@ -53,6 +59,8 @@ if(WITH_TESTS AND VEYON_BUILD_LINUX)
 		Qt${QT_MAJOR_VERSION}::Core
 		veyon-core
 	)
+
+	set_test_target_properties(VncProtocolRobustnessTest)
 
 	add_test(NAME VncProtocolRobustnessTest COMMAND VncProtocolRobustnessTest)
 

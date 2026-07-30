@@ -1,3 +1,15 @@
+# Cibles de test QtTest. Elles ne peuvent pas passer par
+# set_default_target_properties : QT_NO_KEYWORDS y casserait le « private slots: »
+# qu'exige QtTest pour déclarer ses fonctions de test. Elles doivent en revanche
+# hériter du même standard C++, sinon elles retombent sur le défaut du compilateur
+# (gnu++14 avec GCC 10 sur Debian 11) et des constructions C++17 comme
+# std::as_const ne compilent plus.
+macro(set_test_target_properties TARGET_NAME)
+	set_property(TARGET ${TARGET_NAME} PROPERTY CXX_STANDARD 20)
+	set_property(TARGET ${TARGET_NAME} PROPERTY CXX_STANDARD_REQUIRED ON)
+endmacro()
+
+
 macro(set_default_target_properties TARGET_NAME)
 	set_property(TARGET ${TARGET_NAME} PROPERTY NO_SYSTEM_FROM_IMPORTED ON)
 	set_property(TARGET ${TARGET_NAME} PROPERTY CXX_STANDARD 20)

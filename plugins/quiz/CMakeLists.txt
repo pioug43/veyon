@@ -1,4 +1,5 @@
 include(BuildVeyonPlugin)
+include(SetDefaultTargetProperties)
 
 build_veyon_plugin(quiz
 	NAME Quiz
@@ -13,5 +14,6 @@ if(WITH_TESTS)
 	# sinon tout l'environnement Veyon.
 	add_executable(QuizQuestionsTest QuizQuestionsTest.cpp QuizQuestions.cpp)
 	target_link_libraries(QuizQuestionsTest PRIVATE Qt${QT_MAJOR_VERSION}::Test Qt${QT_MAJOR_VERSION}::Core)
+	set_test_target_properties(QuizQuestionsTest)
 	add_test(NAME QuizQuestionsTest COMMAND QuizQuestionsTest)
 endif()

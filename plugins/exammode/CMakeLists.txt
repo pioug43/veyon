@@ -1,4 +1,5 @@
 include(BuildVeyonPlugin)
+include(SetDefaultTargetProperties)
 
 build_veyon_plugin(exammode
 	NAME ExamMode
@@ -48,9 +49,11 @@ endif()
 if(WITH_TESTS)
 	add_executable(ExamModeProfileTest ExamModeProfileTest.cpp)
 	target_link_libraries(ExamModeProfileTest PRIVATE veyon-restrictions Qt${QT_MAJOR_VERSION}::Test Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Network)
+	set_test_target_properties(ExamModeProfileTest)
 	add_test(NAME ExamModeProfileTest COMMAND ExamModeProfileTest)
 
 	add_executable(ExamModeSessionTest ExamModeSessionTest.cpp ExamModeSession.cpp)
 	target_link_libraries(ExamModeSessionTest PRIVATE Qt${QT_MAJOR_VERSION}::Test Qt${QT_MAJOR_VERSION}::Core)
+	set_test_target_properties(ExamModeSessionTest)
 	add_test(NAME ExamModeSessionTest COMMAND ExamModeSessionTest)
 endif()

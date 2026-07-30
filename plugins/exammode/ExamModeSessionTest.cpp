@@ -56,7 +56,10 @@ void ExamModeSessionTest::canonicalPayloadIsStable()
 	a.sequence = 1;
 	a.issuedAtMs = 1000;
 	a.expiresAtMs = 2000;
-	a.requiredCapabilities = { QStringLiteral("network.firewall"), QStringLiteral("process.preventLaunch") };
+	// Affectation explicite : avec Qt 5.15, « = { a, b } » sur un QStringList
+	// est une surcharge ambiguë.
+	a.requiredCapabilities = QStringList{ QStringLiteral("network.firewall"),
+										  QStringLiteral("process.preventLaunch") };
 	a.externalCapabilities = { { QStringLiteral("screenLock"), QStringLiteral("ACTIVE") } };
 	a.signature = QByteArrayLiteral("ignored");
 	a.signingKeyId = QStringLiteral("ignored");

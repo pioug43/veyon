@@ -32,5 +32,6 @@ if(WITH_TESTS)
 	# de restaurer le registre posé par un autre (cf. RegistryPolicyGuardTest).
 	add_executable(RegistryPolicyGuardTest RegistryPolicyGuardTest.cpp)
 	target_link_libraries(RegistryPolicyGuardTest PRIVATE veyon-restrictions Qt${QT_MAJOR_VERSION}::Test)
+	set_test_target_properties(RegistryPolicyGuardTest)
 	add_test(NAME RegistryPolicyGuardTest COMMAND RegistryPolicyGuardTest)
 endif()

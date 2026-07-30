@@ -1,4 +1,5 @@
 include(BuildVeyonPlugin)
+include(SetDefaultTargetProperties)
 
 build_veyon_plugin(courserestrictions
 	NAME CourseRestrictions
@@ -17,5 +18,6 @@ if(WITH_TESTS)
 	# part du plugin, qui exigerait sinon tout l'environnement Veyon.
 	add_executable(CourseRestrictionsProfileTest CourseRestrictionsProfileTest.cpp CourseRestrictionsProfile.cpp)
 	target_link_libraries(CourseRestrictionsProfileTest PRIVATE Qt${QT_MAJOR_VERSION}::Test Qt${QT_MAJOR_VERSION}::Core)
+	set_test_target_properties(CourseRestrictionsProfileTest)
 	add_test(NAME CourseRestrictionsProfileTest COMMAND CourseRestrictionsProfileTest)
 endif()

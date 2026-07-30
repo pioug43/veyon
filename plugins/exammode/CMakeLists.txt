@@ -23,8 +23,8 @@ target_link_libraries(exammode PRIVATE veyon-restrictions)
 if(WIN32)
 	# user32 : énumération de fenêtres + moniteurs ; wtsapi32 : message dans la
 	# session interactive (WTSSendMessage). Ensemble : contrôle/forçage plein
-	# écran du client VDI Omnissa Horizon + avertissement. (advapi32 est fourni
-	# par veyon-restrictions.)
+	# écran de l'application cliente surveillée + avertissement. (advapi32 est
+	# fourni par veyon-restrictions.)
 	target_link_libraries(exammode PRIVATE user32 wtsapi32)
 endif()
 

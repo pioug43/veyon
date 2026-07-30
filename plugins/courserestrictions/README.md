@@ -12,7 +12,7 @@ formalisme du mode examen.
 | Durée | bail (60–3600 s) ré-appliqué périodiquement, dead-man systemd | tant que l'enseignant ne lève pas |
 | Réseau | hosts, PAC Windows, **nftables egress** (fail-closed) | hosts, PAC Windows |
 | Prévention de lancement | IFEO Windows, **fanotify Linux** (noyau) | IFEO Windows uniquement |
-| USB, plein écran VDI | oui | non |
+| Blocage USB, forçage plein écran | oui | non |
 | Priorité | **prioritaire** | s'efface devant le mode examen |
 
 Les deux plugins partagent les mêmes backends (bibliothèque statique

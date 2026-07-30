@@ -214,6 +214,21 @@ MainWindow::MainWindow( VeyonMaster &masterCore, QWidget* parent ) :
 
 	connect( ui->gridSizeSlider, &QSlider::valueChanged,
 			 this, [this]( int size ) { ui->computerMonitoringWidget->setComputerScreenSize( size ); } );
+	// Régler la taille à la main désactive l'ajustement automatique, sinon celui-ci
+	// écrase aussitôt le choix de l'utilisateur.
+	//
+	// On écoute actionTriggered et non sliderMoved (choix amont) : sliderMoved ne
+	// réagit qu'au glissement à la souris, alors qu'actionTriggered couvre aussi les
+	// flèches du clavier, PagePrec/PageSuiv et la molette. Surtout, il n'est PAS émis
+	// par setValue() — c'est indispensable ici, car la connexion suivante appelle
+	// justement setValue() quand l'ajustement automatique agit : l'écouter
+	// désactiverait la fonction dès sa première action.
+	connect( ui->gridSizeSlider, &QSlider::actionTriggered,
+			 this, [this]() {
+				 ui->computerMonitoringWidget->setAutoAdjustIconSize( false );
+				 m_master.userConfig().setAutoAdjustMonitoringIconSize( false );
+				 ui->autoAdjustComputerIconSizeButton->setChecked( false );
+			 } );
 	connect( ui->computerMonitoringWidget, &ComputerMonitoringWidget::computerScreenSizeAdjusted,
 			 ui->gridSizeSlider, &QSlider::setValue );
 	connect( ui->autoAdjustComputerIconSizeButton, &QToolButton::toggled,

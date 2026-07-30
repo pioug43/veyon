@@ -33,9 +33,27 @@ jobs:
           - fedora.44
     runs-on: ubuntu-latest
     container: veyon/ci.linux.${{matrix.dist}}
+    env:
+      # Les tests tournent aussi ici, et pas seulement sur le job Ubuntu/Qt 6 :
+      # c'est la seule couverture de Qt 5.15 (debian.11, GCC 10), où des
+      # constructions C++17 et l'ambiguïté « = { a, b } » sur QStringList
+      # échouent alors qu'elles passent sous Qt 6.
+      CMAKE_FLAGS: -DWITH_TESTS=ON
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
       - run: git config --global --add safe.directory $GITHUB_WORKSPACE
       - run: .ci/linux.${{matrix.dist}}/script.sh $GITHUB_WORKSPACE /tmp
+      # Pas de « ctest --test-dir » ici : Debian 11 embarque cmake 3.18, or
+      # l'option n'existe que depuis cmake 3.20. Elle y serait ignorée en
+      # silence, ctest tournerait dans le répertoire courant, ne trouverait
+      # aucun test et sortirait malgré tout avec 0 — une étape qui passe
+      # toujours sans rien vérifier. On se place donc dans le répertoire de
+      # build, et on refuse explicitement un lot de tests vide.
+      - name: Tests
+        working-directory: /tmp
+        run: |
+          ctest -N | grep -qE "Total Tests: [1-9]" || { echo "Aucun test construit"; exit 1; }
+          ctest --output-on-failure

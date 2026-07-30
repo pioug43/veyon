@@ -24,19 +24,19 @@ public:
 	KeyboardShortcutTrapper* createKeyboardShortcutTrapper( QObject* parent ) override;
 
 private:
-	void setEmptyKeyMapTable();
-	void restoreKeyMapTable();
+	bool grabX11InputDevices();
+	void ungrabX11InputDevices();
 
 	void disableInputDevicesWayland();
 	void enableInputDevicesWayland();
 
 	bool m_inputDevicesDisabled{false};
-	void* m_origKeyTable{nullptr};
-	int m_keyCodeMin{0};
-	int m_keyCodeMax{0};
-	int m_keyCodeCount{0};
-	int m_keySymsPerKeyCode{0};
 
 	const bool m_isWaylandSession;
 	InputBlockHelper* m_inputBlockHelper{nullptr};
+
+	// Display* dédié au grab XInput2 : le grab est relâché par le serveur X dès que
+	// cette connexion se ferme, y compris si veyon-server meurt. C'est tout l'intérêt
+	// par rapport à l'ancienne keymap vide, qui restait en place après un crash.
+	void* m_x11GrabDisplay{nullptr};
 };

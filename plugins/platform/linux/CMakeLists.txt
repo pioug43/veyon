@@ -60,13 +60,23 @@ build_veyon_plugin(linux-platform
 # entrent en conflit avec Qt : ils ne peuvent pas entrer dans un build unifié.
 set_source_files_properties(LinuxCoreFunctions.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
 set_source_files_properties(LinuxSessionFunctions.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+set_source_files_properties(LinuxInputDeviceFunctions.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
 
 target_include_directories(linux-platform PRIVATE ../common)
+
+# XInput2 (libXi) : requis par LinuxInputDeviceFunctions pour saisir les
+# périphériques d'entrée en session X11. On passe par la cible importée fournie
+# par find_package(X11) plutôt que par un « Xi » en dur, afin d'obtenir aussi le
+# chemin d'inclusion de X11/extensions/XInput2.h.
+if(NOT X11_Xi_FOUND)
+	message(FATAL_ERROR "libXi (XInput2) not found - required for blocking local input devices in X11 sessions")
+endif()
 
 target_link_libraries(linux-platform PRIVATE
 	Qt${QT_MAJOR_VERSION}::DBus
 	Qt${QT_MAJOR_VERSION}::Network
 	${X11_LIBRARIES}
+	X11::Xi
 )
 
 pkg_check_modules(procps libproc2)

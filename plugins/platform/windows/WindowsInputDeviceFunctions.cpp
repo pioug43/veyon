@@ -174,6 +174,10 @@ void WindowsInputDeviceFunctions::enableInterception()
 									interception_is_any,
 									InterceptionFilter(INTERCEPTION_FILTER_KEY_ALL) | InterceptionFilter(INTERCEPTION_FILTER_MOUSE_ALL));
 		}
+		else
+		{
+			vCritical() << "failed to create interception context";
+		}
 	}
 }
 

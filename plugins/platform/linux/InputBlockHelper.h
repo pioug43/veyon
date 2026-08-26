@@ -44,9 +44,11 @@ public:
 	bool isBlocked() const { return m_blocked; }
 
 private:
-	bool sendCommand(const QString& cmd);
-	bool ensureDaemonRunning();
+	static constexpr auto SocketWaitTimeout = 5000;
 
-	QProcess* m_daemon{nullptr};
+	bool sendCommand(const QString& cmd);
+	bool ensureRunning();
+
+	QProcess* m_process{nullptr};
 	bool m_blocked{false};
 };

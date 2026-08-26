@@ -113,6 +113,8 @@ public:
 
 	bool handleFeatureMessage( VeyonWorkerInterface& worker, const FeatureMessage& message ) override;
 
+	bool isFeatureActive(VeyonServerInterface& server, Feature::Uid featureUid) const override;
+
 	ConfigurationPage* createConfigurationPage() override;
 
 private:

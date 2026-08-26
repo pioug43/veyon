@@ -457,6 +457,15 @@ bool DemoFeaturePlugin::handleFeatureMessage( VeyonWorkerInterface& worker, cons
 
 
 
+bool DemoFeaturePlugin::isFeatureActive(VeyonServerInterface& server, Feature::Uid featureUid) const
+{
+	return featureUid == m_demoFeature.uid() &&
+			(server.featureWorkerManager().isWorkerRunning(m_demoClientFullScreenFeature.uid()) ||
+			 server.featureWorkerManager().isWorkerRunning(m_demoClientWindowFeature.uid()));
+}
+
+
+
 ConfigurationPage* DemoFeaturePlugin::createConfigurationPage()
 {
 	return new DemoConfigurationPage( m_configuration );

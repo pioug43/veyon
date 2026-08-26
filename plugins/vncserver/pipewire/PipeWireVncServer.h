@@ -125,8 +125,6 @@ private Q_SLOTS:
 	void onPortalStarted();
 	void onPortalFailed();
 	void onStreamEnded();
-	void onFirstClientConnected();
-	void onLastClientDisconnected();
 
 private:
 	bool initVncServer(int serverPort, const Password& password);
@@ -138,10 +136,6 @@ private:
 	// LibVNCServer input event callbacks (C linkage function pointers)
 	static void onKbdAddEvent(rfbBool down, rfbKeySym keySym, rfbClientRec* cl);
 	static void onPtrAddEvent(int buttonMask, int x, int y, rfbClientRec* cl);
-
-	// LibVNCServer client lifecycle callbacks
-	static enum rfbNewClientAction onNewClientHook(rfbClientRec* cl);
-	static void onClientGone(rfbClientRec* cl);
 
 	PortalSession*       m_portalSession{nullptr};
 	PipeWireFramebuffer* m_framebuffer{nullptr};

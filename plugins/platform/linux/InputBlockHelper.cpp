@@ -24,6 +24,7 @@
 
 #include "InputBlockHelper.h"
 
+#include <QCoreApplication>
 #include <QLocalSocket>
 #include <QProcess>
 

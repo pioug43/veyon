@@ -22,8 +22,8 @@ build_veyon_plugin(linux-platform
 	LinuxPlatformConfigurationPage.ui
 	LinuxFilesystemFunctions.cpp
 	LinuxInputDeviceFunctions.cpp
-		InputBlockHelper.cpp
-		InputBlockHelper.h
+	InputBlockHelper.cpp
+	InputBlockHelper.h
 	LinuxNetworkFunctions.cpp
 	LinuxServerProcess.cpp
 	LinuxServiceCore.cpp

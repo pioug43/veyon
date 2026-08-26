@@ -28,7 +28,6 @@
 #include "DemoClient.h"
 #include "LockWidget.h"
 #include "PlatformCoreFunctions.h"
-#include "PlatformInputDeviceFunctions.h"
 #include "VncViewWidget.h"
 
 
@@ -38,11 +37,7 @@ DemoClient::DemoClient( const QString& host, int port, bool fullscreen, QRect vi
 {
 	if( fullscreen )
 	{
-		VeyonCore::platform().inputDeviceFunctions().disableInputDevices();
 		m_toplevel = new LockWidget( LockWidget::NoBackground );
-		connect (m_toplevel, &QObject::destroyed, this, []() {
-			VeyonCore::platform().inputDeviceFunctions().enableInputDevices();
-		});
 	}
 	else
 	{

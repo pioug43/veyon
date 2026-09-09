@@ -55,6 +55,13 @@ public:
 	};
 	Q_ENUM(UidRoleContent)
 
+	enum class VisibilityMode {
+		Normal,
+		Blurred,
+		Hidden,
+	};
+	Q_ENUM(VisibilityMode)
+
 	enum class SortOrder {
 		ComputerAndUserName,
 		UserName,
@@ -89,6 +96,12 @@ public:
 		return m_uidRoleContent;
 	}
 
+	VisibilityMode visibilityMode() const
+	{
+		return m_visibilityMode;
+	}
+
+
 	SortOrder sortOrder() const
 	{
 		return m_sortOrder;
@@ -102,6 +115,7 @@ public:
 private:
 	DisplayRoleContent m_displayRoleContent;
 	UidRoleContent m_uidRoleContent;
+	VisibilityMode m_visibilityMode;
 	SortOrder m_sortOrder;
 	AspectRatio m_aspectRatio;
 

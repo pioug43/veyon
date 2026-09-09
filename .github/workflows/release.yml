@@ -28,6 +28,13 @@ jobs:
   build-linux:
     needs: test-ubuntu
     strategy:
+      # Une publication doit dire QUELLES distributions cassent. Avec
+      # l'annulation en cascade, l'échec de rhel.8 en v4.11.27 a annulé les
+      # douze autres jobs : impossible de savoir si le défaut était général ou
+      # propre à une chaîne d'outils, alors que la réponse conditionnait le
+      # diagnostic. Le coût est de laisser tourner des jobs condamnés ; il est
+      # inférieur à celui d'une publication à rejouer pour observer.
+      fail-fast: false
       matrix:
         dist:
           - debian.11

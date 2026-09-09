@@ -261,7 +261,37 @@ endif()
 
 if(WITH_LTO)
 	ProcessorCount(CPU_COUNT)
-	set(GCC_LTO_FLAGS "-flto=${CPU_COUNT} -fno-fat-lto-objects")
+	# LISTE, et non chaîne : une chaîne contenant une espace part comme UN seul
+	# argument dans la ligne de liaison (« -flto=N -fno-fat-lto-objects » entre
+	# guillemets), que le compilateur ne reconnaît alors pas.
+	set(GCC_LTO_FLAGS -flto=${CPU_COUNT} -fno-fat-lto-objects)
+
+	# Archiveur conscient de LTO pour les bibliothèques STATIQUES.
+	#
+	# Avec -fno-fat-lto-objects, une archive ne contient que du bytecode GIMPLE :
+	# l'index produit par « ar » ordinaire n'y voit aucun symbole, et le code
+	# objet de secours n'existe plus. Les consommateurs échouent alors au lien
+	# sur tous les symboles de l'archive. Un binutils récent charge le greffon
+	# LTO tout seul, ce qui masque le problème ; GCC 10 / Debian 11, non.
+	#
+	# gcc-ar et gcc-ranlib passent le greffon explicitement. CMake le ferait via
+	# INTERPROCEDURAL_OPTIMIZATION, que la voie GCC de
+	# SetDefaultTargetProperties n'emploie pas (elle pose les drapeaux à la main
+	# pour garder le parallélisme -flto=N).
+	if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+		find_program(GCC_AR_PROGRAM NAMES gcc-ar)
+		find_program(GCC_RANLIB_PROGRAM NAMES gcc-ranlib)
+		if(GCC_AR_PROGRAM AND GCC_RANLIB_PROGRAM)
+			set(CMAKE_CXX_ARCHIVE_CREATE "${GCC_AR_PROGRAM} qc <TARGET> <LINK_FLAGS> <OBJECTS>")
+			set(CMAKE_CXX_ARCHIVE_APPEND "${GCC_AR_PROGRAM} q <TARGET> <LINK_FLAGS> <OBJECTS>")
+			set(CMAKE_CXX_ARCHIVE_FINISH "${GCC_RANLIB_PROGRAM} <TARGET>")
+		else()
+			# Sans gcc-ar, garder le code objet en plus du bytecode : « ar »
+			# ordinaire indexe alors de vrais symboles.
+			list(REMOVE_ITEM GCC_LTO_FLAGS -fno-fat-lto-objects)
+			message(STATUS "gcc-ar introuvable : conservation des objets LTO « fat »")
+		endif()
+	endif()
 endif()
 
 if(WITH_FUZZERS)

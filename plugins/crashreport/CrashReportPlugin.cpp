@@ -86,6 +86,10 @@ QString CrashReportPlugin::componentName()
 	case VeyonCore::Component::Master: return QStringLiteral("Master");
 	case VeyonCore::Component::CLI: return QStringLiteral("CLI");
 	case VeyonCore::Component::Configurator: return QStringLiteral("Configurator");
+	// Composant introduit en amont (4.11.1) par le durcissement de
+	// l'assistant d'authentification : ce switch est exhaustif (-Werror=switch),
+	// toute nouvelle valeur doit donc être nommée ici.
+	case VeyonCore::Component::AuthHelper: return QStringLiteral("AuthHelper");
 	}
 
 	return QStringLiteral("Unknown");

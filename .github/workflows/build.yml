@@ -25,6 +25,33 @@ jobs:
           name: ubuntu-24.04-packages
           path: veyon*.deb
 
+  # Compilation avec optimisation au lien, sur la plus ancienne distribution.
+  #
+  # linux-build.sh n'active LTO que si CI_COMMIT_TAG est renseigné, donc
+  # uniquement lors d'une publication : le reste du temps rien ne compile avec
+  # LTO. Un défaut propre à ce mode restait donc invisible jusqu'à la
+  # publication elle-même — c'est ainsi qu'une archive statique illisible par
+  # « ar » ordinaire n'a été découverte qu'en produisant une version cassée.
+  # Ce job reproduit la configuration de publication à chaque poussée, sur
+  # Debian 11 (GCC 10, binutils sans chargement automatique du greffon LTO),
+  # où le problème se manifeste.
+  build-linux-lto:
+    runs-on: ubuntu-latest
+    container: veyon/ci.linux.debian.11
+    env:
+      # Valeur factice : elle ne sert qu'à faire basculer le script en mode
+      # publication (LTO=ON, RelWithDebInfo, traductions). Aucun artefact
+      # n'est publié. Ne commence délibérément pas par « v » : CMakeLists.txt
+      # ignore alors la valeur et retombe sur la version par défaut, donc
+      # aucun paquet ne peut se faire passer pour une version publiée.
+      CI_COMMIT_TAG: ci-lto-check
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - run: git config --global --add safe.directory $GITHUB_WORKSPACE
+      - run: .ci/linux.debian.11/script.sh $GITHUB_WORKSPACE /tmp
+
   build-linux:
     strategy:
       matrix:

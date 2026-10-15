@@ -24,8 +24,10 @@
 
 #include "PipeWireVncServer.h"
 #include "PipeWireFramebuffer.h"
+#include "PipeWireVncConfigurationWidget.h"
 #include "PortalSession.h"
 
+#include "VeyonConfiguration.h"
 #include "VeyonCore.h"
 #include "PlatformCoreFunctions.h"
 #include "PlatformInputDeviceFunctions.h"
@@ -45,7 +47,15 @@ static constexpr int EventLoopTickMs = 25;
 
 PipeWireVncServer::PipeWireVncServer(QObject* parent)
 	: QObject(parent)
+	, m_configuration(&VeyonCore::config())
 {
+}
+
+
+
+QWidget* PipeWireVncServer::configurationWidget()
+{
+	return new PipeWireVncConfigurationWidget(m_configuration);
 }
 
 PipeWireVncServer::~PipeWireVncServer()
@@ -82,7 +92,7 @@ bool PipeWireVncServer::runServer(int serverPort, const Password& password)
 	// Created with nullptr parent to avoid the cross-thread QObject parent warning:
 	// runServer() is called from the VncServer thread while PipeWireVncServer itself
 	// lives on a different thread. Ownership is transferred to cleanupVncServer().
-	m_portalSession = new PortalSession(nullptr);
+	m_portalSession = new PortalSession(m_configuration.persistRestoreToken(), nullptr);
 	connect(m_portalSession, &PortalSession::started, this, &PipeWireVncServer::onPortalStarted,
 			Qt::QueuedConnection);
 	connect(m_portalSession, &PortalSession::failed,  this, &PipeWireVncServer::onPortalFailed,
@@ -195,9 +205,11 @@ bool PipeWireVncServer::initVncServer(int serverPort, const Password& password)
 	m_rfbScreen->authPasswdData  = m_vncPasswords;
 	m_rfbScreen->passwordCheck   = rfbCheckPasswordByList;
 
-	m_rfbScreen->serverFormat.redShift     = 16;
+	// PipeWireFramebuffer::convertFrame() writes R,G,B,x bytes (rgbSwapped() of the
+	// BGRx stream), and rfbNewFramebuffer() resets to exactly that (little-endian) on a resize
+	m_rfbScreen->serverFormat.redShift     = 0;
 	m_rfbScreen->serverFormat.greenShift   = 8;
-	m_rfbScreen->serverFormat.blueShift    = 0;
+	m_rfbScreen->serverFormat.blueShift    = 16;
 	m_rfbScreen->serverFormat.redMax       = 255;
 	m_rfbScreen->serverFormat.greenMax     = 255;
 	m_rfbScreen->serverFormat.blueMax      = 255;
@@ -295,3 +307,6 @@ void PipeWireVncServer::onPtrAddEvent(int buttonMask, int x, int y, rfbClientRec
 		self->m_portalSession->notifyPointer(buttonMask, x, y);
 	}
 }
+
+
+IMPLEMENT_CONFIG_PROXY(PipeWireVncConfiguration)

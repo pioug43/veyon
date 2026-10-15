@@ -60,11 +60,13 @@ void VncServerProtocol::start()
 {
 	if( state() == State::Disconnected )
 	{
-		std::array<char, sz_rfbProtocolVersionMsg> protocol{};
+		// one extra byte for the terminating NUL written by snprintf() so that the
+		// trailing '\n' of the 12 byte version message is not truncated (upstream PR #1193)
+		std::array<char, sz_rfbProtocolVersionMsg + 1> protocol{};
 
 		std::snprintf(protocol.data(), protocol.size(), rfbProtocolVersionFormat, 3, 8); // Flawfinder: ignore
 
-		m_socket->write(protocol.data(), protocol.size());
+		m_socket->write(protocol.data(), sz_rfbProtocolVersionMsg);
 
 		setState( State::Protocol );
 	}

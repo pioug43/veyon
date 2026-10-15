@@ -36,7 +36,8 @@
 VncViewWidget::VncViewWidget( const ComputerControlInterface::Pointer& computerControlInterface,
 							  QRect viewport, QWidget* parent ) :
 	QWidget( parent ),
-	VncView( computerControlInterface )
+	VncView( computerControlInterface ),
+	m_forceOpaqueFramebuffer( QGuiApplication::platformName().startsWith( QLatin1String("wayland") ) )
 {
 	setViewport( viewport );
 
@@ -133,6 +134,8 @@ void VncViewWidget::setViewOnly( bool enabled )
 
 void VncViewWidget::updateView( int x, int y, int w, int h )
 {
+	m_scaledImageOutdated = true;
+
 	update( x, y, w, h );
 }
 
@@ -263,12 +266,33 @@ void VncViewWidget::paintEvent( QPaintEvent* paintEvent )
 
 	if( isScaledView() )
 	{
-		// repaint everything in scaled mode to avoid artifacts at rectangle boundaries
-		p.drawImage( QRect( QPoint( 0, 0 ), scaledSize() ), image, source );
+		// QPainter shrinks with bilinear sampling, which leaves text and thin lines uneven and
+		// makes them shimmer as they move; QImage::scaled() averages areas instead. The copy is
+		// made again only after an update, or when the scaled size or the viewport changed.
+		const auto targetSize = scaledSize();
+		if( m_scaledImageOutdated || m_scaledImage.size() != targetSize || m_scaledImageSource != source )
+		{
+			m_scaledImage = ( source == image.rect() ? image : image.copy( source ) )
+								.scaled( targetSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation );
+			m_scaledImageSource = source;
+			m_scaledImageOutdated = false;
+		}
+		p.drawImage( 0, 0, m_scaledImage );
 	}
 	else
 	{
 		p.drawImage( { 0, 0 }, image, source );
+	}
+
+	if( m_forceOpaqueFramebuffer )
+	{
+		// the framebuffer is Format_RGB32 but VNC servers leave the unused byte at 0; on Wayland the
+		// window surface is composited with that byte as alpha, so the remote screen showed up
+		// overexposed/transparent (#1182) - make the painted area opaque again
+		const auto paintedSize = isScaledView() ? scaledSize() : source.size();
+		p.setCompositionMode( QPainter::CompositionMode_DestinationOver );
+		p.fillRect( QRect( QPoint( 0, 0 ), paintedSize ), Qt::black );
+		p.setCompositionMode( QPainter::CompositionMode_SourceOver );
 	}
 
 	if( connection()->state() != VncConnection::State::Connected )

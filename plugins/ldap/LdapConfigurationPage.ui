@@ -475,17 +475,25 @@
           <string>Object attributes</string>
          </property>
          <layout class="QGridLayout" name="gridLayout_22">
-          <item row="7" column="1">
-           <widget class="QLineEdit" name="locationNameAttribute">
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="computerDisplayNameAttribute">
             <property name="placeholderText">
-             <string>e.g. name, ou or description</string>
+             <string>e.g. cn or displayName</string>
             </property>
            </widget>
           </item>
-          <item row="4" column="0" colspan="4">
-           <widget class="QCheckBox" name="computerHostNameAsFQDN">
+          <item row="1" column="0">
+           <widget class="QLabel" name="groupMemberAttributeLabel">
             <property name="text">
-             <string>Hostnames stored as fully qualified domain names (FQDN, e.g. myhost.example.org)</string>
+             <string>Group member attribute</string>
+            </property>
+           </widget>
+          </item>
+          <item row="7" column="3">
+           <widget class="QPushButton" name="testLocationNameAttribute">
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
             </property>
            </widget>
           </item>
@@ -497,71 +505,11 @@
             </property>
            </widget>
           </item>
-          <item row="6" column="1">
-           <widget class="QLineEdit" name="computerLocationAttribute">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="placeholderText">
-             <string>e.g. room or computerLab</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="0">
-           <widget class="QLabel" name="userLoginNameAttributeLabel">
-            <property name="text">
-             <string>User login name attribute</string>
-            </property>
-           </widget>
-          </item>
-          <item row="6" column="0">
-           <widget class="QLabel" name="computerLocationAttributeLabel">
-            <property name="text">
-             <string>Computer location attribute</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QLineEdit" name="groupMemberAttribute">
-            <property name="placeholderText">
-             <string>e.g. member or memberUid</string>
-            </property>
-           </widget>
-          </item>
           <item row="5" column="3">
            <widget class="QPushButton" name="testComputerMacAddressAttribute">
             <property name="icon">
              <iconset resource="../../core/resources/core.qrc">
               <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="groupMemberAttributeLabel">
-            <property name="text">
-             <string>Group member attribute</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="3">
-           <widget class="QPushButton" name="testUserLoginNameAttribute">
-            <property name="icon">
-             <iconset resource="../../core/resources/core.qrc">
-              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="1">
-           <widget class="QLineEdit" name="computerMacAddressAttribute">
-            <property name="placeholderText">
-             <string>e.g. hwAddress</string>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="0">
-           <widget class="QLabel" name="computerMacAddressAttributeLabel">
-            <property name="text">
-             <string>Computer MAC address attribute</string>
             </property>
            </widget>
           </item>
@@ -580,55 +528,25 @@
             </property>
            </widget>
           </item>
-          <item row="3" column="3">
-           <widget class="QPushButton" name="testComputerHostNameAttribute">
-            <property name="icon">
-             <iconset resource="../../core/resources/core.qrc">
-              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
-            </property>
-           </widget>
-          </item>
-          <item row="6" column="2">
-           <widget class="QPushButton" name="browseComputerLocationAttribute">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="icon">
-             <iconset resource="../../core/resources/core.qrc">
-              <normaloff>:/core/edit-find.png</normaloff>:/core/edit-find.png</iconset>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="3">
-           <widget class="QPushButton" name="testGroupMemberAttribute">
-            <property name="icon">
-             <iconset resource="../../core/resources/core.qrc">
-              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
-            </property>
-           </widget>
-          </item>
-          <item row="6" column="3">
-           <widget class="QPushButton" name="testComputerLocationAttribute">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="icon">
-             <iconset resource="../../core/resources/core.qrc">
-              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QLineEdit" name="userLoginNameAttribute">
+          <item row="7" column="1">
+           <widget class="QLineEdit" name="locationNameAttribute">
             <property name="placeholderText">
-             <string>e.g. uid or sAMAccountName</string>
+             <string>e.g. name, ou or description</string>
             </property>
            </widget>
           </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="computerDisplayNameAttributeLabel">
-            <property name="text">
-             <string>Computer display name attribute</string>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="groupMemberAttribute">
+            <property name="placeholderText">
+             <string>e.g. member or memberUid</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QPushButton" name="testUserLoginNameAttribute">
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
             </property>
            </widget>
           </item>
@@ -639,18 +557,27 @@
             </property>
            </widget>
           </item>
-          <item row="7" column="0">
-           <widget class="QLabel" name="locationNameAttributeLabel">
-            <property name="text">
-             <string>Location name attribute</string>
+          <item row="5" column="1">
+           <widget class="QLineEdit" name="computerMacAddressAttribute">
+            <property name="placeholderText">
+             <string>e.g. hwAddress</string>
             </property>
            </widget>
           </item>
-          <item row="1" column="2">
-           <widget class="QPushButton" name="browseGroupMemberAttribute">
-            <property name="icon">
-             <iconset resource="../../core/resources/core.qrc">
-              <normaloff>:/core/edit-find.png</normaloff>:/core/edit-find.png</iconset>
+          <item row="6" column="1">
+           <widget class="QLineEdit" name="computerLocationAttribute">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>e.g. room or computerLab</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="computerDisplayNameAttributeLabel">
+            <property name="text">
+             <string>Computer display name attribute</string>
             </property>
            </widget>
           </item>
@@ -670,23 +597,37 @@
             </property>
            </widget>
           </item>
-          <item row="7" column="3">
-           <widget class="QPushButton" name="testLocationNameAttribute">
+          <item row="1" column="3">
+           <widget class="QPushButton" name="testGroupMemberAttribute">
             <property name="icon">
              <iconset resource="../../core/resources/core.qrc">
               <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
             </property>
            </widget>
           </item>
-          <item row="2" column="1">
-           <widget class="QLineEdit" name="computerDisplayNameAttribute">
-            <property name="placeholderText">
-             <string>e.g. cn or displayName</string>
+          <item row="5" column="0">
+           <widget class="QLabel" name="computerMacAddressAttributeLabel">
+            <property name="text">
+             <string>Computer MAC address attribute</string>
             </property>
            </widget>
           </item>
-          <item row="2" column="2">
-           <widget class="QPushButton" name="browseComputerDisplayNameAttribute">
+          <item row="6" column="0">
+           <widget class="QLabel" name="computerLocationAttributeLabel">
+            <property name="text">
+             <string>Computer location attribute</string>
+            </property>
+           </widget>
+          </item>
+          <item row="7" column="0">
+           <widget class="QLabel" name="locationNameAttributeLabel">
+            <property name="text">
+             <string>Location name attribute</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QPushButton" name="browseGroupMemberAttribute">
             <property name="icon">
              <iconset resource="../../core/resources/core.qrc">
               <normaloff>:/core/edit-find.png</normaloff>:/core/edit-find.png</iconset>
@@ -698,6 +639,65 @@
             <property name="icon">
              <iconset resource="../../core/resources/core.qrc">
               <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="2">
+           <widget class="QPushButton" name="browseComputerLocationAttribute">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/edit-find.png</normaloff>:/core/edit-find.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QPushButton" name="browseComputerDisplayNameAttribute">
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/edit-find.png</normaloff>:/core/edit-find.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="3">
+           <widget class="QPushButton" name="testComputerHostNameAttribute">
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="userLoginNameAttribute">
+            <property name="placeholderText">
+             <string>e.g. uid or sAMAccountName</string>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="3">
+           <widget class="QPushButton" name="testComputerLocationAttribute">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="0" colspan="4">
+           <widget class="QCheckBox" name="computerHostNameAsFQDN">
+            <property name="text">
+             <string>Hostnames stored as fully qualified domain names (FQDN, e.g. myhost.example.org)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="0">
+           <widget class="QLabel" name="userLoginNameAttributeLabel">
+            <property name="text">
+             <string>User login name attribute</string>
             </property>
            </widget>
           </item>
@@ -773,7 +773,7 @@
            </widget>
           </item>
           <item row="1" column="0">
-           <widget class="QLabel" name="label_36">
+           <widget class="QLabel" name="userGroupsFilterLabel">
             <property name="text">
              <string>Filter for user groups</string>
             </property>
@@ -854,15 +854,45 @@
          <property name="title">
           <string>Query options</string>
          </property>
-         <layout class="QVBoxLayout" name="verticalLayout_5">
-          <item>
+         <layout class="QGridLayout" name="gridLayout_2">
+          <item row="1" column="0">
+           <widget class="QCheckBox" name="queryUserGroupsFromUserAttribute">
+            <property name="text">
+             <string>Query user groups from user attribute</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="userGroupsAttribute">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QPushButton" name="browseUserGroupsAttribute">
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/edit-find.png</normaloff>:/core/edit-find.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QPushButton" name="testUserGroupsAttribute">
+            <property name="icon">
+             <iconset resource="../../core/resources/core.qrc">
+              <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="0" colspan="4">
            <widget class="QCheckBox" name="queryNestedUserGroups">
             <property name="text">
              <string>Query nested user groups (supported by AD only)</string>
             </property>
            </widget>
           </item>
-          <item>
+          <item row="2" column="0" colspan="4">
            <widget class="QCheckBox" name="mapContainerStructureToLocations">
             <property name="text">
              <string>Map container/OU structure 1:1 to locations</string>
@@ -977,58 +1007,96 @@
       </attribute>
       <layout class="QVBoxLayout" name="verticalLayout_3">
        <item>
-        <widget class="QPushButton" name="testGroupsOfUser">
-         <property name="text">
-          <string>List all groups of a user</string>
+        <widget class="QGroupBox" name="groupBox_3">
+         <property name="title">
+          <string>User groups</string>
          </property>
-         <property name="icon">
-          <iconset resource="ldap.qrc">
-           <normaloff>:/ldap/user-group-properties.png</normaloff>:/ldap/user-group-properties.png</iconset>
-         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_7">
+          <item>
+           <widget class="QPushButton" name="testUserGroups">
+            <property name="text">
+             <string>List all user groups</string>
+            </property>
+            <property name="icon">
+             <iconset resource="ldap.qrc">
+              <normaloff>:/ldap/user-group-properties.png</normaloff>:/ldap/user-group-properties.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="testGroupsOfUser">
+            <property name="text">
+             <string>List all groups of a user</string>
+            </property>
+            <property name="icon">
+             <iconset resource="ldap.qrc">
+              <normaloff>:/ldap/user-group-properties.png</normaloff>:/ldap/user-group-properties.png</iconset>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="testGroupsOfComputer">
-         <property name="text">
-          <string>List all groups of a computer</string>
+        <widget class="QGroupBox" name="groupBox_4">
+         <property name="title">
+          <string>Locations</string>
          </property>
-         <property name="icon">
-          <iconset resource="ldap.qrc">
-           <normaloff>:/ldap/computer.png</normaloff>:/ldap/computer.png</iconset>
-         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_5">
+          <item>
+           <widget class="QPushButton" name="testLocations">
+            <property name="text">
+             <string>List all locations</string>
+            </property>
+            <property name="icon">
+             <iconset resource="ldap.qrc">
+              <normaloff>:/ldap/distribute-vertical-margin.png</normaloff>:/ldap/distribute-vertical-margin.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="testLocationEntries">
+            <property name="text">
+             <string>List all computers at a specific location</string>
+            </property>
+            <property name="icon">
+             <iconset resource="ldap.qrc">
+              <normaloff>:/ldap/configure.png</normaloff>:/ldap/configure.png</iconset>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="testComputerObjectByIpAddress">
-         <property name="text">
-          <string>Get computer object by IP address</string>
+        <widget class="QGroupBox" name="groupBox_5">
+         <property name="title">
+          <string>Computers</string>
          </property>
-         <property name="icon">
-          <iconset resource="ldap.qrc">
-           <normaloff>:/ldap/computer.png</normaloff>:/ldap/computer.png</iconset>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="testLocationEntries">
-         <property name="text">
-          <string>List all entries of a location</string>
-         </property>
-         <property name="icon">
-          <iconset resource="ldap.qrc">
-           <normaloff>:/ldap/configure.png</normaloff>:/ldap/configure.png</iconset>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="testLocations">
-         <property name="text">
-          <string>List all locations</string>
-         </property>
-         <property name="icon">
-          <iconset resource="ldap.qrc">
-           <normaloff>:/ldap/distribute-vertical-margin.png</normaloff>:/ldap/distribute-vertical-margin.png</iconset>
-         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_8">
+          <item>
+           <widget class="QPushButton" name="testComputerObjectByIpAddress">
+            <property name="text">
+             <string>Get computer object by IP address</string>
+            </property>
+            <property name="icon">
+             <iconset resource="ldap.qrc">
+              <normaloff>:/ldap/computer.png</normaloff>:/ldap/computer.png</iconset>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="testGroupsOfComputer">
+            <property name="text">
+             <string>List all groups of a computer</string>
+            </property>
+            <property name="icon">
+             <iconset resource="ldap.qrc">
+              <normaloff>:/ldap/computer.png</normaloff>:/ldap/computer.png</iconset>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </widget>
        </item>
        <item>
@@ -1066,6 +1134,7 @@
   <tabstop>browseCACertificateFile</tabstop>
   <tabstop>isFixedBaseDn</tabstop>
   <tabstop>baseDn</tabstop>
+  <tabstop>browseBaseDn</tabstop>
   <tabstop>testBaseDn</tabstop>
   <tabstop>queryNamingContext</tabstop>
   <tabstop>namingContextAttribute</tabstop>
@@ -1116,17 +1185,16 @@
   <tabstop>testComputerGroupsFilter</tabstop>
   <tabstop>testComputerContainersFilter</tabstop>
   <tabstop>queryNestedUserGroups</tabstop>
+  <tabstop>queryUserGroupsFromUserAttribute</tabstop>
+  <tabstop>userGroupsAttribute</tabstop>
+  <tabstop>browseUserGroupsAttribute</tabstop>
+  <tabstop>testUserGroupsAttribute</tabstop>
   <tabstop>mapContainerStructureToLocations</tabstop>
   <tabstop>identifyGroupMembersByDN</tabstop>
   <tabstop>identifyGroupMembersByNameAttribute</tabstop>
   <tabstop>computerLocationsByGroups</tabstop>
   <tabstop>computerLocationsByContainer</tabstop>
   <tabstop>computerLocationsByAttribute</tabstop>
-  <tabstop>testGroupsOfUser</tabstop>
-  <tabstop>testGroupsOfComputer</tabstop>
-  <tabstop>testComputerObjectByIpAddress</tabstop>
-  <tabstop>testLocationEntries</tabstop>
-  <tabstop>testLocations</tabstop>
  </tabstops>
  <resources>
   <include location="../../core/resources/core.qrc"/>
@@ -1421,11 +1489,27 @@
     </hint>
    </hints>
   </connection>
+  <connection>
+   <sender>queryUserGroupsFromUserAttribute</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>userGroupsAttribute</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>152</x>
+     <y>308</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>404</x>
+     <y>309</y>
+    </hint>
+   </hints>
+  </connection>
  </connections>
  <buttongroups>
-  <buttongroup name="computerGroupingGroup"/>
-  <buttongroup name="baseDnConfigGroup"/>
-  <buttongroup name="groupMemberMatchingGroup"/>
   <buttongroup name="bindConfigurationGroup"/>
+  <buttongroup name="computerGroupingGroup"/>
+  <buttongroup name="groupMemberMatchingGroup"/>
+  <buttongroup name="baseDnConfigGroup"/>
  </buttongroups>
 </ui>

@@ -91,53 +91,44 @@
        <item>
         <widget class="QGroupBox" name="groupBox_4">
          <property name="title">
-          <string>User interface</string>
+          <string>Monitoring view</string>
          </property>
          <layout class="QGridLayout" name="gridLayout_2" columnstretch="0,1">
           <property name="horizontalSpacing">
            <number>10</number>
           </property>
-          <item row="5" column="0">
-           <widget class="QLabel" name="label_9">
-            <property name="text">
-             <string>Text color</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QSpinBox" name="computerMonitoringUpdateInterval">
-            <property name="suffix">
-             <string> ms</string>
-            </property>
-            <property name="minimum">
-             <number>250</number>
-            </property>
-            <property name="maximum">
-             <number>10000</number>
-            </property>
-            <property name="singleStep">
-             <number>250</number>
-            </property>
-            <property name="value">
-             <number>1000</number>
-            </property>
-           </widget>
-          </item>
-          <item row="4" column="0">
+          <item row="12" column="0">
            <widget class="QLabel" name="label_6">
             <property name="text">
              <string>Background color</string>
             </property>
            </widget>
           </item>
-          <item row="8" column="0">
-           <widget class="QLabel" name="label_11">
+          <item row="10" column="0">
+           <widget class="QLabel" name="label_10">
             <property name="text">
-             <string>Thumbnail spacing</string>
+             <string>Sort order</string>
             </property>
            </widget>
           </item>
-          <item row="8" column="1">
+          <item row="13" column="0">
+           <widget class="QLabel" name="label_9">
+            <property name="text">
+             <string>Text color</string>
+            </property>
+           </widget>
+          </item>
+          <item row="13" column="1">
+           <widget class="QPushButton" name="computerMonitoringTextColor"/>
+          </item>
+          <item row="7" column="0">
+           <widget class="QLabel" name="label_16">
+            <property name="text">
+             <string>Visibility mode</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="1">
            <widget class="QSpinBox" name="computerMonitoringThumbnailSpacing">
             <property name="suffix">
              <string> px</string>
@@ -156,73 +147,55 @@
             </property>
            </widget>
           </item>
-          <item row="3" column="1">
-           <widget class="QComboBox" name="computerMonitoringAspectRatio">
-            <item>
-             <property name="text">
-              <string>Auto</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string notr="true">16:9</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string notr="true">16:10</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string notr="true">3:2</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string notr="true">4:3</string>
-             </property>
-            </item>
-           </widget>
-          </item>
-          <item row="6" column="0">
-           <widget class="QLabel" name="label_8">
+          <item row="4" column="0">
+           <widget class="QLabel" name="label_12">
             <property name="text">
-             <string>Computer thumbnail caption</string>
+             <string>Aspect ratio</string>
             </property>
            </widget>
           </item>
           <item row="7" column="1">
-           <widget class="QComboBox" name="computerMonitoringSortOrder">
+           <widget class="QComboBox" name="computerMonitoringVisibilityMode">
             <item>
              <property name="text">
-              <string>Computer and user name</string>
+              <string>Normal</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>Only user name</string>
+              <string>Blurred</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>Only computer name</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Only last part of user name</string>
+              <string>Hidden</string>
              </property>
             </item>
            </widget>
           </item>
-          <item row="4" column="1">
+          <item row="12" column="1">
            <widget class="QPushButton" name="computerMonitoringBackgroundColor"/>
           </item>
-          <item row="5" column="1">
-           <widget class="QPushButton" name="computerMonitoringTextColor"/>
+          <item row="0" column="1">
+           <widget class="QSpinBox" name="computerMonitoringUpdateInterval">
+            <property name="suffix">
+             <string> ms</string>
+            </property>
+            <property name="minimum">
+             <number>250</number>
+            </property>
+            <property name="maximum">
+             <number>10000</number>
+            </property>
+            <property name="singleStep">
+             <number>250</number>
+            </property>
+            <property name="value">
+             <number>1000</number>
+            </property>
+           </widget>
           </item>
-          <item row="6" column="1">
+          <item row="8" column="1">
            <widget class="QComboBox" name="computerDisplayRoleContent">
             <item>
              <property name="text">
@@ -241,28 +214,7 @@
             </item>
            </widget>
           </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="label_7">
-            <property name="text">
-             <string>Thumbnail update interval</string>
-            </property>
-           </widget>
-          </item>
-          <item row="7" column="0">
-           <widget class="QLabel" name="label_10">
-            <property name="text">
-             <string>Sort order</string>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="0">
-           <widget class="QLabel" name="label_12">
-            <property name="text">
-             <string>Thumbnail aspect ratio</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
+          <item row="1" column="1">
            <widget class="QComboBox" name="computerMonitoringImageQuality">
             <item>
              <property name="text">
@@ -291,21 +243,125 @@
             </item>
            </widget>
           </item>
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_13">
+          <item row="10" column="1">
+           <widget class="QComboBox" name="computerMonitoringSortOrder">
+            <item>
+             <property name="text">
+              <string>Computer and user name</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Only user name</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Only computer name</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Only last part of user name</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="5" column="0">
+           <widget class="QLabel" name="label_11">
             <property name="text">
-             <string>Image quality in monitoring mode</string>
+             <string>Grid spacing</string>
             </property>
            </widget>
           </item>
           <item row="1" column="0">
-           <widget class="QLabel" name="label_14">
+           <widget class="QLabel" name="label_13">
             <property name="text">
-             <string>Remote access image quality</string>
+             <string>Image quality</string>
             </property>
            </widget>
           </item>
-          <item row="1" column="1">
+          <item row="4" column="1">
+           <widget class="QComboBox" name="computerMonitoringAspectRatio">
+            <item>
+             <property name="text">
+              <string>Auto</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string notr="true">16:9</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string notr="true">16:10</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string notr="true">3:2</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string notr="true">4:3</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="8" column="0">
+           <widget class="QLabel" name="label_8">
+            <property name="text">
+             <string>Display label</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_7">
+            <property name="text">
+             <string>Refresh rate</string>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="0">
+           <widget class="QLabel" name="label_17">
+            <property name="text">
+             <string>Grid sizing mode</string>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="1">
+           <widget class="QComboBox" name="computerMonitoringGridSizingMode">
+            <item>
+             <property name="text">
+              <string>Full-length labels (scales down all thumbnails)</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Maximized thumbnails (truncated labels)</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupBox_5">
+         <property name="title">
+          <string>Remote access</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_5" columnstretch="0,1">
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_14">
+            <property name="text">
+             <string>Image quality</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
            <widget class="QComboBox" name="remoteAccessImageQuality">
             <item>
              <property name="text">
@@ -769,19 +825,23 @@
   <tabstop>openUserConfigurationDirectory</tabstop>
   <tabstop>openScreenshotDirectory</tabstop>
   <tabstop>openConfigurationTemplatesDirectory</tabstop>
-  <tabstop>computerMonitoringImageQuality</tabstop>
-  <tabstop>remoteAccessImageQuality</tabstop>
   <tabstop>computerMonitoringUpdateInterval</tabstop>
+  <tabstop>computerMonitoringImageQuality</tabstop>
   <tabstop>computerMonitoringAspectRatio</tabstop>
-  <tabstop>computerMonitoringBackgroundColor</tabstop>
-  <tabstop>computerMonitoringTextColor</tabstop>
+  <tabstop>computerMonitoringThumbnailSpacing</tabstop>
+  <tabstop>computerMonitoringGridSizingMode</tabstop>
+  <tabstop>computerMonitoringVisibilityMode</tabstop>
   <tabstop>computerDisplayRoleContent</tabstop>
   <tabstop>computerMonitoringSortOrder</tabstop>
-  <tabstop>computerMonitoringThumbnailSpacing</tabstop>
+  <tabstop>computerMonitoringBackgroundColor</tabstop>
+  <tabstop>computerMonitoringTextColor</tabstop>
+  <tabstop>remoteAccessImageQuality</tabstop>
   <tabstop>computerNameSource</tabstop>
   <tabstop>computerUidRoleContent</tabstop>
   <tabstop>guestUserProperty</tabstop>
   <tabstop>guestUserValue</tabstop>
+  <tabstop>guestUserIdentityExtensionType</tabstop>
+  <tabstop>guestUserIdentityExtensionValue</tabstop>
   <tabstop>accessControlForMasterEnabled</tabstop>
   <tabstop>autoSelectCurrentLocation</tabstop>
   <tabstop>autoAdjustMonitoringIconSize</tabstop>

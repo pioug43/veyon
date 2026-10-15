@@ -31,6 +31,8 @@
 #include "VeyonMaster.h"
 #include "UserConfig.h"
 
+void qt_blurImage(QImage& blurImage, qreal radius, bool quality, int transposed);
+
 #if defined(QT_TESTLIB_LIB)
 #include <QAbstractItemModelTester>
 #endif
@@ -161,6 +163,7 @@ void ComputerControlListModel::updateComputerScreenSize()
 
 		Q_EMIT computerScreenSizeChanged();
 	}
+
 }
 
 
@@ -434,10 +437,19 @@ QImage ComputerControlListModel::computerDecorationRole( const ComputerControlIn
 	{
 	case ComputerControlInterface::State::Connected:
 	{
-		const auto image = controlInterface->scaledFramebuffer();
-		if( image.isNull() == false )
+		auto image = controlInterface->scaledFramebuffer();
+		if (image.isNull() == false)
 		{
-			return image;
+			switch (visibilityMode())
+			{
+			case VisibilityMode::Normal:
+				return image;
+			case VisibilityMode::Blurred:
+				qt_blurImage(image, std::max(10, controlInterface->scaledFramebufferSize().width() / 64), false, 0);
+				return image;
+			case VisibilityMode::Hidden:
+				break;
+			}
 		}
 
 		return scaleAndAlignIcon(m_iconHostOnline, controlInterface->scaledFramebufferSize());

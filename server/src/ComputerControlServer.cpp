@@ -61,12 +61,10 @@ ComputerControlServer::ComputerControlServer( QObject* parent ) :
 	connect( &m_serverAccessControlManager, &ServerAccessControlManager::finished,
 			 this, &ComputerControlServer::showAccessControlMessage );
 
-	connect(&m_vncProxyServer, &VncProxyServer::serverMessageProcessed,
-			 this, &ComputerControlServer::sendAsyncFeatureMessages, Qt::DirectConnection);
-	// Dès la fin du handshake (frontière de message RFB sûre) : pousser l'état
-	// courant (mode examen, features actives) sans attendre la première trame,
-	// pour qu'une connexion fraîche du broker webapi ne lise pas « UNKNOWN ».
-	connect(&m_vncProxyServer, &VncProxyServer::connectionEstablished,
+	// [fork] synchronisation à la fin du handshake (frontière de message RFB sûre, cf. 658c56627)
+	// puis au moins toutes les 500 ms : une connexion fraîche du broker webapi lit l'état du mode
+	// examen sans attendre la première trame, et l'état reste à jour même sans mise à jour d'écran
+	connect(&m_vncProxyServer, &VncProxyServer::connectionSynchronized,
 			 this, &ComputerControlServer::sendAsyncFeatureMessages, Qt::DirectConnection);
 	connect( &m_vncProxyServer, &VncProxyServer::connectionClosed, this, &ComputerControlServer::updateTrayIconToolTip );
 }

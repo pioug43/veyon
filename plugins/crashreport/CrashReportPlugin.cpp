@@ -32,6 +32,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
+#include <QLockFile>
+#include <QThread>
 #include <QUrl>
 
 #include "CrashReportPlugin.h"
@@ -64,7 +66,26 @@ CrashReportPlugin::CrashReportPlugin( QObject* parent ) :
 	const auto uploadUrl = VeyonCore::config().crashReportUploadUrl();
 	if( uploadUrl.isEmpty() == false )
 	{
-		uploadPendingReports( spoolDir, uploadUrl, VeyonCore::config().crashReportUploadToken() );
+		const auto uploadToken = VeyonCore::config().crashReportUploadToken();
+
+		// en arrière-plan : le démarrage du composant (relancé justement après un crash)
+		// ne doit jamais attendre le portail
+		startUpload( spoolDir, uploadUrl, uploadToken );
+
+		// composants de longue durée : nouvel essai périodique, pour ne pas attendre le
+		// prochain démarrage quand le portail était injoignable (les VDI non persistantes
+		// sont souvent détruites avant)
+		const auto component = VeyonCore::component();
+		if( component == VeyonCore::Component::Service ||
+			component == VeyonCore::Component::Server ||
+			component == VeyonCore::Component::Master )
+		{
+			auto retryTimer = new QTimer( this );
+			connect( retryTimer, &QTimer::timeout, this, [spoolDir, uploadUrl, uploadToken]() {
+				startUpload( spoolDir, uploadUrl, uploadToken );
+			} );
+			retryTimer->start( UploadRetryInterval );
+		}
 	}
 
 	const auto logDir = VeyonCore::filesystem().expandPath( VeyonCore::config().logFileDirectory() );
@@ -132,6 +153,27 @@ void CrashReportPlugin::pruneOldReports( const QString& spoolDir, int keep )
 
 
 
+void CrashReportPlugin::startUpload( const QString& spoolDir, const QString& url, const QString& token )
+{
+	auto thread = QThread::create( [spoolDir, url, token]() {
+		// un seul téléverseur à la fois par poste : au démarrage, service, serveur et
+		// workers chargent tous ce plugin en même temps
+		QLockFile lock( QDir( spoolDir ).filePath( QStringLiteral(".upload.lock") ) );
+		lock.setStaleLockTime( UploadLockStaleTime );
+		if( lock.tryLock( 0 ) == false )
+		{
+			return;
+		}
+		uploadPendingReports( spoolDir, url, token );
+	} );
+	// jamais détruit en cours d'exécution : libéré une fois terminé ; si le processus se
+	// termine pendant l'envoi, le rapport reste dans le spool et repartira plus tard
+	QObject::connect( thread, &QThread::finished, thread, &QObject::deleteLater );
+	thread->start( QThread::LowestPriority );
+}
+
+
+
 void CrashReportPlugin::uploadPendingReports( const QString& spoolDir, const QString& url, const QString& token )
 {
 	const QUrl endpoint( url );
@@ -192,7 +234,16 @@ void CrashReportPlugin::uploadPendingReports( const QString& spoolDir, const QSt
 		{
 			reply->abort();
 		}
-		reply->deleteLater();
+		delete reply;
+
+		// rapport refusé tel quel (format invalide, trop volumineux) : il ne sera jamais
+		// accepté, on le met de côté pour ne pas bloquer les suivants indéfiniment
+		if( httpStatus == 413 || httpStatus == 422 )
+		{
+			vWarning() << "CrashReport: report" << fileInfo.fileName() << "rejected by portal - status" << httpStatus;
+			QFile::rename( fileInfo.absoluteFilePath(), fileInfo.absoluteFilePath() + QStringLiteral(".rejected") );
+			continue;
+		}
 
 		if( ok )
 		{

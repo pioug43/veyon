@@ -24,8 +24,11 @@
 
 #include "InputBlockHelper.h"
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QThread>
 
 #include "VeyonCore.h"
 
@@ -43,48 +46,48 @@ InputBlockHelper::~InputBlockHelper()
 
 bool InputBlockHelper::start()
 {
-	if (m_daemon)
+	if (m_process)
 	{
-		vDebug() << "InputBlockHelper daemon already started";
+		vDebug() << "InputBlockHelper already started";
 		return true;
 	}
 
-	m_daemon = new QProcess(this);
-	m_daemon->start(QStringLiteral("veyon-input-helper"),
+	m_process = new QProcess(this);
+	m_process->start(QStringLiteral("veyon-input-helper"),
 					QStringList{QString::number(QCoreApplication::applicationPid())});
 
-	if (m_daemon->waitForStarted(5000) == false)
+	if (m_process->waitForStarted(5000) == false)
 	{
-		vWarning() << "Failed to start veyon-input-helper daemon:" << m_daemon->errorString();
-		delete m_daemon;
-		m_daemon = nullptr;
+		vWarning() << "Failed to start veyon-input-helper:" << m_process->errorString();
+		delete m_process;
+		m_process = nullptr;
 		return false;
 	}
 
-	vInfo() << "veyon-input-helper daemon started, PID" << m_daemon->processId();
+	vInfo() << "veyon-input-helper started, PID" << m_process->processId();
 	return true;
 }
 
 void InputBlockHelper::stop()
 {
-	if (m_daemon == nullptr)
+	if (m_process == nullptr)
 		return;
 
 	unblock(); // release any held grabs
 
-	m_daemon->terminate();
-	if (m_daemon->waitForFinished(5000) == false)
+	m_process->terminate();
+	if (m_process->waitForFinished(5000) == false)
 	{
-		m_daemon->kill();
-		m_daemon->waitForFinished(3000);
+		m_process->kill();
+		m_process->waitForFinished(3000);
 	}
-	delete m_daemon;
-	m_daemon = nullptr;
+	delete m_process;
+	m_process = nullptr;
 }
 
 bool InputBlockHelper::block()
 {
-	if (ensureDaemonRunning() == false)
+	if (ensureRunning() == false)
 		return false;
 
 	const bool ok = sendCommand(QStringLiteral("block"));
@@ -95,7 +98,7 @@ bool InputBlockHelper::block()
 
 bool InputBlockHelper::unblock()
 {
-	if (ensureDaemonRunning() == false)
+	if (ensureRunning() == false)
 		return false;
 
 	const bool ok = sendCommand(QStringLiteral("unblock"));
@@ -110,7 +113,7 @@ bool InputBlockHelper::sendCommand(const QString& cmd)
 	socket.connectToServer(SocketPath);
 	if (socket.waitForConnected(3000) == false)
 	{
-		vWarning() << "InputBlockHelper: failed to connect to daemon socket";
+		vWarning() << "InputBlockHelper: failed to connect to socket";
 		return false;
 	}
 
@@ -119,7 +122,7 @@ bool InputBlockHelper::sendCommand(const QString& cmd)
 
 	if (socket.waitForReadyRead(3000) == false)
 	{
-		vWarning() << "InputBlockHelper: no response from daemon";
+		vWarning() << "InputBlockHelper: no response";
 		return false;
 	}
 
@@ -127,17 +130,43 @@ bool InputBlockHelper::sendCommand(const QString& cmd)
 	return response == "ok";
 }
 
-bool InputBlockHelper::ensureDaemonRunning()
+bool InputBlockHelper::ensureRunning()
 {
-	// Try connecting first — daemon may already be running
-	QLocalSocket test;
-	test.connectToServer(SocketPath);
-	if (test.waitForConnected(1000))
+	// restart a helper which crashed or got killed - otherwise input blocking silently stops working
+	if (m_process && m_process->state() == QProcess::NotRunning)
 	{
-		test.disconnectFromServer();
-		return true;
+		vWarning() << "veyon-input-helper is not running anymore - restarting it";
+		delete m_process;
+		m_process = nullptr;
 	}
 
-	// Daemon not running — start it
-	return start();
+	if (m_process == nullptr && start() == false)
+	{
+		return false;
+	}
+
+	QElapsedTimer socketWaitTimer;
+	socketWaitTimer.start();
+
+	while (socketWaitTimer.elapsed() < SocketWaitTimeout)
+	{
+		QLocalSocket socket;
+		socket.connectToServer(SocketPath);
+		if (socket.waitForConnected(SocketWaitTimeout))
+		{
+			return true;
+		}
+
+		if (socket.error() == QLocalSocket::ServerNotFoundError)
+		{
+			socket.abort();
+			QThread::msleep(50);
+		}
+		else
+		{
+			return false;
+		}
+	}
+
+	return false;
 }

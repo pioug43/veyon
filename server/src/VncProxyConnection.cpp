@@ -54,6 +54,7 @@ VncProxyConnection::VncProxyConnection( QTcpSocket* clientSocket,
 
 	connect( m_proxyClientSocket, &QTcpSocket::readyRead, this, &VncProxyConnection::readFromClient );
 	connect( m_vncServerSocket, &QTcpSocket::readyRead, this, &VncProxyConnection::readFromServer );
+	connect(&m_clientSyncTimer, &QTimer::timeout, this, &VncProxyConnection::synchronizeClientStream);
 	connect( &m_clientRetryTimer, &QTimer::timeout, this, &VncProxyConnection::readFromClient );
 	connect( &m_serverRetryTimer, &QTimer::timeout, this, &VncProxyConnection::readFromServer );
 	connect( &m_handshakeTimer, &QTimer::timeout, this, [this]() {
@@ -151,9 +152,8 @@ void VncProxyConnection::readFromServer()
 	}
 	else if( serverProtocol().state() == VncServerProtocol::State::Running )
 	{
-		while( receiveServerMessage() )
+		while (synchronizeClientStream() && receiveServerMessage())
 		{
-			Q_EMIT serverMessageProcessed();
 		}
 	}
 	else
@@ -167,30 +167,49 @@ void VncProxyConnection::readFromServer()
 
 
 
-bool VncProxyConnection::forwardDataToClient( qint64 size )
+bool VncProxyConnection::flushPendingToSocket(QTcpSocket* target, QByteArray& pending)
 {
-	if( m_vncServerSocket->bytesAvailable() >= size )
+	if (pending.isEmpty())
 	{
-		const auto data = m_vncServerSocket->peek(size);
-		if( data.size() == size )
-		{
-			const auto written = m_proxyClientSocket->write(data);
-			if( written > 0 )
-			{
-				m_vncServerSocket->read(written);
-			}
-			else if( written < 0 )
-			{
-				m_proxyClientSocket->close();
-			}
-			if( written >= 0 && written != size )
-			{
-				vWarning() << "partial write to proxy client; closing connection";
-				m_proxyClientSocket->close();
-				m_vncServerSocket->close();
-			}
-			return written == size;
-		}
+		return true;
+	}
+
+	const auto written = target->write(pending);
+	if (written < 0)
+	{
+		m_proxyClientSocket->close();
+		m_vncServerSocket->close();
+		return false;
+	}
+
+	if (written > 0)
+	{
+		pending.remove(0, static_cast<qsizetype>(written));
+	}
+
+	if (pending.size() > MaximumPendingWriteSize)
+	{
+		vCritical() << "closing slow peer" << target->peerAddress().toString()
+					<< "with oversized pending write buffer";
+		m_proxyClientSocket->close();
+		m_vncServerSocket->close();
+		return false;
+	}
+
+	return pending.isEmpty();
+}
+
+
+
+bool VncProxyConnection::synchronizeClientStream()
+{
+	if (serverProtocol().state() == VncServerProtocol::State::Running &&
+		clientProtocol().state() == VncClientProtocol::Running &&
+		flushPendingToSocket(m_proxyClientSocket, m_pendingClientData))
+	{
+		Q_EMIT clientStreamSynchronized();
+
+		return true;
 	}
 
 	return false;
@@ -200,31 +219,42 @@ bool VncProxyConnection::forwardDataToClient( qint64 size )
 
 bool VncProxyConnection::forwardDataToServer( qint64 size )
 {
-	if( m_proxyClientSocket->bytesAvailable() >= size )
+	if (!flushPendingToSocket(m_vncServerSocket, m_pendingServerData))
 	{
-		const auto data = m_proxyClientSocket->peek(size);
-		if( data.size() == size )
-		{
-			const auto written = m_vncServerSocket->write(data);
-			if( written > 0 )
-			{
-				m_proxyClientSocket->read(written);
-			}
-			else if( written < 0 )
-			{
-				m_vncServerSocket->close();
-			}
-			if( written >= 0 && written != size )
-			{
-				vWarning() << "partial write to VNC server; closing connection";
-				m_proxyClientSocket->close();
-				m_vncServerSocket->close();
-			}
-			return written == size;
-		}
+		return false;
 	}
 
-	return false;
+	if (m_proxyClientSocket->bytesAvailable() < size)
+	{
+		return false;
+	}
+
+	const auto data = m_proxyClientSocket->read(size);
+	if (data.size() != size)
+	{
+		return false;
+	}
+
+	const auto written = m_vncServerSocket->write( data );
+	if (written < 0)
+	{
+		m_vncServerSocket->close();
+		return false;
+	}
+
+	if (written < size)
+	{
+		m_pendingServerData.append(data.mid(static_cast<qsizetype>(written)));
+		if (m_pendingServerData.size() > MaximumPendingWriteSize)
+		{
+			vCritical() << "closing slow VNC server with oversized pending write buffer";
+			m_proxyClientSocket->close();
+			m_vncServerSocket->close();
+		}
+		return false;
+	}
+
+	return true;
 }
 
 
@@ -323,33 +353,19 @@ bool VncProxyConnection::receiveClientMessage()
 
 bool VncProxyConnection::receiveServerMessage()
 {
-	if( m_pendingClientData.isEmpty() == false )
-	{
-		const auto written = m_proxyClientSocket->write(m_pendingClientData);
-		if( written > 0 )
-		{
-			m_pendingClientData.remove(0, static_cast<int>(written));
-		}
-		else if( written < 0 )
-		{
-			m_proxyClientSocket->close();
-		}
-		return false;
-	}
-
 	if( clientProtocol().receiveMessage() )
 	{
 		const auto& message = clientProtocol().lastMessage();
 		const auto written = m_proxyClientSocket->write(message);
-		if( written < 0 )
+		if (written < 0)
 		{
 			m_proxyClientSocket->close();
 			return false;
 		}
-		if( written < message.size() )
+		if (written < message.size())
 		{
-			m_pendingClientData = message.mid(static_cast<int>(written));
-			if( m_pendingClientData.size() > MaximumPendingWriteSize )
+			m_pendingClientData = message.mid(static_cast<qsizetype>(written));
+			if (m_pendingClientData.size() > MaximumPendingWriteSize)
 			{
 				vCritical() << "closing slow client with oversized pending write buffer";
 				m_proxyClientSocket->close();
@@ -371,15 +387,13 @@ void VncProxyConnection::updateHandshakeState()
 	{
 		m_handshakeTimer.stop();
 
-		// Handshake terminé des deux côtés : le flux RFB est à une frontière de
-		// message, on peut pousser immédiatement les messages de fonctionnalité
-		// asynchrones (état du mode examen, features actives…) au lieu d'attendre
-		// la première trame serveur — un client fraîchement connecté (broker
-		// webapi) obtenait sinon « UNKNOWN » jusqu'au premier framebuffer update.
-		if( m_connectionEstablishedEmitted == false )
+		// [fork] handshake terminé des deux côtés : pousser immédiatement les messages de
+		// fonctionnalité asynchrones (état du mode examen…) sans attendre la première trame
+		// serveur (658c56627), puis au moins toutes les ClientSyncInterval ms (c82020b93)
+		if (m_clientSyncTimer.isActive() == false)
 		{
-			m_connectionEstablishedEmitted = true;
-			Q_EMIT connectionEstablished();
+			synchronizeClientStream();
+			m_clientSyncTimer.start(ClientSyncInterval);
 		}
 	}
 }

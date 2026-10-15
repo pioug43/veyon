@@ -26,6 +26,7 @@
 #include "rfb/rfbproto.h"
 
 #include <QTcpSocket>
+#include <QTimer>
 
 #include "DemoConfiguration.h"
 #include "DemoServer.h"
@@ -47,8 +48,7 @@ DemoServerConnection::DemoServerConnection( DemoServer* demoServer,
 									 std::pair<int, int>( rfbKeyEvent, sz_rfbKeyEventMsg ),
 									 std::pair<int, int>( rfbPointerEvent, sz_rfbPointerEventMsg ),
 									 } ),
-	m_keyFrame( -1 ),
-	m_framebufferUpdateMessageIndex( 0 ),
+	m_epochId(demoServer->epochId()),
 	m_framebufferUpdateInterval( m_demoServer->configuration().framebufferUpdateInterval() )
 {
 	start();
@@ -74,6 +74,14 @@ void DemoServerConnection::run()
 	connect( m_socket, &QTcpSocket::readyRead, this, &DemoServerConnection::processClient, Qt::DirectConnection );
 	connect( m_socket, &QTcpSocket::disconnected, this, &DemoServerConnection::quit );
 
+	// [fork] les clients en mode Live (3bdc9cc7d) n'émettent pas de nouvelle requête
+	// tant que la précédente n'a pas reçu de réponse : une requête sans donnée à envoyer
+	// est donc mémorisée et resservie par un minuteur unique (jamais plusieurs en vol)
+	m_pendingUpdateTimer = new QTimer;
+	m_pendingUpdateTimer->setSingleShot(true);
+	m_pendingUpdateTimer->setInterval(qMax(m_framebufferUpdateInterval, int(MinimumPendingUpdateRetryInterval)));
+	connect(m_pendingUpdateTimer, &QTimer::timeout, m_socket, [this]() { sendFramebufferUpdate(); }, Qt::DirectConnection);
+
 	m_serverProtocol = new DemoServerProtocol( m_demoAccessToken, m_socket, &m_vncServerClient ),
 
 	m_serverProtocol->setServerInitMessage( m_demoServer->serverInitMessage() );
@@ -81,6 +89,8 @@ void DemoServerConnection::run()
 
 	exec();
 
+	delete m_pendingUpdateTimer;
+	m_pendingUpdateTimer = nullptr;
 	delete m_serverProtocol;
 	delete m_socket;
 
@@ -184,30 +194,42 @@ void DemoServerConnection::sendFramebufferUpdate()
 {
 	m_demoServer->lockDataForRead();
 
+	QList<QByteArray> messages;
 	const auto& framebufferUpdateMessages = m_demoServer->framebufferUpdateMessages();
+	const auto framebufferUpdateMessageCount = framebufferUpdateMessages.count();
+	const auto offset = m_fbuSequenceNumber - m_demoServer->fbuSequenceNumber();
 
-	const int framebufferUpdateMessageCount = framebufferUpdateMessages.count();
-
-	if( m_demoServer->keyFrame() != m_keyFrame ||
-			m_framebufferUpdateMessageIndex > framebufferUpdateMessageCount )
+	const auto inSync = offset >= 0 && m_demoServer->epochId() == m_epochId;
+	if (inSync)
 	{
-		m_framebufferUpdateMessageIndex = 0;
-		m_keyFrame = m_demoServer->keyFrame();
+		for (qsizetype i = offset; i < framebufferUpdateMessageCount; ++i)
+		{
+			messages.append(framebufferUpdateMessages[i].second);
+			++m_fbuSequenceNumber;
+		}
 	}
-
-	bool sentUpdates = false;
-	while( m_framebufferUpdateMessageIndex < framebufferUpdateMessageCount )
+	else
 	{
-		m_socket->write( framebufferUpdateMessages[m_framebufferUpdateMessageIndex] );
-		++m_framebufferUpdateMessageIndex;
-		sentUpdates = true;
+		vWarning() << "synchronization lost for client" << m_socket->peerAddress();
+		Q_EMIT synchronizationLost(m_epochId);
 	}
 
 	m_demoServer->unlockData();
 
-	if( sentUpdates == false )
+	for (const auto& message : std::as_const(messages))
 	{
-		// did not send updates but client still waiting for update? then try again soon
-		QTimer::singleShot( m_framebufferUpdateInterval, m_socket, [this]() { sendFramebufferUpdate(); } );
+		m_socket->write(message);
+	}
+
+	if (m_pendingUpdateTimer)
+	{
+		if (messages.isEmpty() == false)
+		{
+			m_pendingUpdateTimer->stop();
+		}
+		else if (inSync && m_pendingUpdateTimer->isActive() == false)
+		{
+			m_pendingUpdateTimer->start();
+		}
 	}
 }

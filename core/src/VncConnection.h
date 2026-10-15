@@ -142,6 +142,16 @@ public:
 		setControlFlag(ControlFlag::RequiresManualUpdateRateControl, on);
 	}
 
+	/** \brief Decode into a buffer of the connection's own and hand out complete updates only
+	 *
+	 * Without it, image() wraps the buffer LibVNCClient decodes into, so a reader painting or
+	 * encoding it at full size can catch an update half written. With it, each connection keeps a
+	 * second framebuffer. Takes effect between two framebuffer updates. */
+	void setPresentCompleteUpdates(bool on)
+	{
+		setControlFlag(ControlFlag::PresentCompleteUpdates, on);
+	}
+
 	void rescaleFramebuffer();
 
 	static constexpr int VncConnectionTag = 0x590123;
@@ -185,7 +195,9 @@ private:
 		SkipHostPing = 0x20,
 		RequiresManualUpdateRateControl = 0x40,
 		TriggerFramebufferUpdate = 0x80,
-		SkipFramebufferUpdates = 0x100
+		SkipFramebufferUpdates = 0x100,
+		PresentCompleteUpdates = 0x200,
+		QualityChanged = 0x400,
 	};
 
 	~VncConnection() override;
@@ -202,11 +214,14 @@ private:
 	bool initFrameBuffer();
 	void requestFrameufferUpdate(FramebufferUpdateType updateType);
 	void finishFrameBufferUpdate();
+	void presentFramebufferUpdate();
+	void updatePresentationMode();
 
 	int fullFramebufferUpdateTimeout() const;
 	int incrementalFramebufferUpdateTimeout() const;
 
 	void updateEncodingSettingsFromQuality();
+	void applyQualityChange();
 
 	void sendEvents();
 
@@ -243,7 +258,7 @@ private:
 
 	// connection parameters and data
 	rfbClient* m_client;
-	VncConnectionConfiguration::Quality m_quality = VncConnectionConfiguration::Quality::Highest;
+	std::atomic<VncConnectionConfiguration::Quality> m_quality{VncConnectionConfiguration::Quality::Highest};
 	QString m_host;
 	int m_port;
 	int m_defaultPort{-1};
@@ -264,7 +279,10 @@ private:
 	QQueue<VncEvent *> m_eventQueue;
 
 	// framebuffer data and thread synchronization objects
-	QImage m_image{};
+	QImage m_framebuffer{}; // LibVNCClient's buffer, written by the connection thread only
+	QList<QRect> m_updatedRects{}; // decoded since the last presented update, when presenting
+	bool m_presentingCompleteUpdates{false}; // connection thread only
+	QImage m_image{}; // m_framebuffer itself, or a copy that receives complete updates only
 	QImage m_scaledFramebuffer{};
 	QSize m_scaledSize{};
 	QReadWriteLock m_imgLock{};

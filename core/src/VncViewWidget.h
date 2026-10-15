@@ -75,4 +75,10 @@ private:
 	static constexpr int MouseBorderSignalDelay = 500;
 	QTimer m_mouseBorderSignalTimer{this};
 
+	// the connection's image as a scaled view shows it, and the viewport it was made from
+	QImage m_scaledImage{};
+	QRect m_scaledImageSource{};
+	bool m_scaledImageOutdated{true};
+	bool m_forceOpaqueFramebuffer{false};
+
 } ;

@@ -26,6 +26,8 @@
 
 #include "DemoServerProtocol.h"
 
+class QTimer;
+
 class DemoServer;
 
 // clazy:excludeall=ctor-missing-parent-argument
@@ -41,10 +43,19 @@ public:
 
 	enum {
 		ProtocolRetryTime = 250,
+		MinimumPendingUpdateRetryInterval = 10,
 	};
 
 	DemoServerConnection( DemoServer* demoServer, const Password& demoAccessToken, quintptr socketDescriptor );
 	~DemoServerConnection() = default;
+
+	qsizetype fbuSequenceNumber() const
+	{
+		return m_fbuSequenceNumber;
+	}
+
+Q_SIGNALS:
+	void synchronizationLost(int epochId);
 
 private:
 	void run() override;
@@ -62,11 +73,12 @@ private:
 
 	VncServerClient m_vncServerClient;
 	DemoServerProtocol* m_serverProtocol{nullptr};
+	QTimer* m_pendingUpdateTimer{nullptr};
 
 	const QMap<int, int> m_rfbClientToServerMessageSizes;
 
-	int m_keyFrame;
-	int m_framebufferUpdateMessageIndex;
+	QAtomicInteger<qsizetype> m_fbuSequenceNumber = 0;
+	int m_epochId;
 
 	const int m_framebufferUpdateInterval;
 

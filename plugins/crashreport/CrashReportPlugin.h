@@ -28,8 +28,9 @@
 
 // Plugin qui installe une capture de crash à l'échelle du processus dès son
 // chargement (donc dans TOUS les exécutables Veyon). Les rapports sont écrits
-// dans un dossier spool local et collectés plus tard par le portail via la
-// Web API (endpoint crashreport). Voir CrashHandler.
+// dans un dossier spool local, puis téléversés vers le portail VDI
+// (CrashReportUploadUrl) en arrière-plan, au démarrage et périodiquement.
+// Voir CrashHandler.
 class CrashReportPlugin : public QObject, PluginInterface
 {
 	Q_OBJECT
@@ -76,6 +77,11 @@ private:
 	// du broker ne pouvant pas atteindre les VM). Hors gestionnaire de crash :
 	// contexte normal, HTTP autorisé.
 	static void uploadPendingReports( const QString& spoolDir, const QString& url, const QString& token );
+	// lance uploadPendingReports() dans un thread dédié, sous verrou de spool
+	static void startUpload( const QString& spoolDir, const QString& url, const QString& token );
+
+	static constexpr int UploadRetryInterval = 15 * 60 * 1000;
+	static constexpr int UploadLockStaleTime = 5 * 60 * 1000;
 
 	static constexpr int MaxRetainedReports = 25;
 

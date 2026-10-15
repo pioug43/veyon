@@ -169,6 +169,10 @@ public:
 	bool isMessageQueueEmpty();
 
 	void setUpdateMode( UpdateMode updateMode );
+
+	// always hand out complete framebuffer updates, whatever the update mode (e.g. API clients
+	// receiving the framebuffer as one encoded image); a Live view enables them anyway
+	void setPresentCompleteUpdatesRequired( bool required );
 	UpdateMode updateMode() const
 	{
 		return m_updateMode;
@@ -216,6 +220,7 @@ private:
 	const int m_port;
 
 	UpdateMode m_updateMode{UpdateMode::Disabled};
+	bool m_presentCompleteUpdatesRequired{false};
 	Computer::NameSource m_computerNameSource{Computer::NameSource::Default};
 
 	State m_state{State::Disconnected};

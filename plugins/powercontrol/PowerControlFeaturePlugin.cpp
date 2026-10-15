@@ -23,6 +23,7 @@
  */
 
 #include <QtConcurrent>
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QMessageBox>
 #include <QNetworkInterface>
@@ -187,20 +188,6 @@ bool PowerControlFeaturePlugin::startFeature( VeyonMasterInterface& master, cons
 		return controlFeature( feature.uid(), Operation::Start, {}, computerControlInterfaces );
 	}
 
-	if( feature == m_powerDownDelayedFeature )
-	{
-		PowerDownTimeInputDialog dialog( master.mainWindow() );
-
-		if( dialog.exec() )
-		{
-			return controlFeature( feature.uid(), Operation::Start,
-								   { { argToString(Argument::ShutdownTimeout), dialog.seconds() } },
-								   computerControlInterfaces );
-		}
-
-		return true;
-	}
-
 	const auto executeOnAllComputers =
 		computerControlInterfaces.size() >= master.filteredComputerControlInterfaces().size();
 
@@ -208,6 +195,21 @@ bool PowerControlFeaturePlugin::startFeature( VeyonMasterInterface& master, cons
 	{
 		return false;
 	}
+
+	if (feature == m_powerDownDelayedFeature)
+	{
+		PowerDownTimeInputDialog dialog(master.mainWindow());
+
+		if (dialog.exec())
+		{
+			return controlFeature(feature.uid(), Operation::Start,
+								  {{argToString(Argument::ShutdownTimeout), dialog.seconds()}},
+								  computerControlInterfaces);
+		}
+
+		return true;
+	}
+
 
 	return controlFeature( feature.uid(), Operation::Start, {}, computerControlInterfaces );
 }
@@ -478,7 +480,20 @@ void PowerControlFeaturePlugin::displayShutdownTimeout( int shutdownTimeout )
 		updateDialog( &dialog, dialog.value()+1 );
 	} );
 
-	dialog.exec();
+	// the countdown can't be dismissed (Esc/X re-show it), but if the event loop no longer runs
+	// (application quitting, worker being stopped) exec() returns at once: don't spin forever
+	// at 100% CPU, carry out the announced power down instead
+	int immediateReturns = 0;
+	while (immediateReturns < MaximumImmediateDialogReturns)
+	{
+		QElapsedTimer execTimer;
+		execTimer.start();
+		if (dialog.exec() == QDialog::Accepted)
+		{
+			break;
+		}
+		immediateReturns = execTimer.elapsed() < ImmediateDialogReturnTime ? immediateReturns + 1 : 0;
+	}
 
 	VeyonCore::platform().coreFunctions().powerDown(false);
 }

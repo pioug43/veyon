@@ -67,6 +67,10 @@ struct Context
 	QString kernel;
 	QString cpuArch;
 	QString buildAbi;
+	QString buildCommit;
+	QString qtVersion;
+	QString sessionType;
+	QString startedAt;
 	QString logDirectory;
 	qint64 pid = 0;
 	bool installed = false;
@@ -135,6 +139,12 @@ void writeReport( const QString& basePath, const QString& reason, const QString&
 	o.insert( QStringLiteral("kernel"), g_ctx.kernel );
 	o.insert( QStringLiteral("cpuArch"), g_ctx.cpuArch );
 	o.insert( QStringLiteral("buildAbi"), g_ctx.buildAbi );
+	// schéma 1 étendu (champs additionnels, ignorés par un portail plus ancien) :
+	// de quoi regrouper les plantages par build exact et par contexte d'exécution
+	o.insert( QStringLiteral("buildCommit"), g_ctx.buildCommit );
+	o.insert( QStringLiteral("qtVersion"), g_ctx.qtVersion );
+	o.insert( QStringLiteral("sessionType"), g_ctx.sessionType );
+	o.insert( QStringLiteral("startedAt"), g_ctx.startedAt );
 	o.insert( QStringLiteral("reason"), reason );
 	o.insert( QStringLiteral("details"), details );
 	if( backtrace.isEmpty() == false )
@@ -357,6 +367,14 @@ void CrashHandler::install( const QString& spoolDir, const QString& componentNam
 	g_ctx.kernel = QStringLiteral("%1 %2").arg( QSysInfo::kernelType(), QSysInfo::kernelVersion() );
 	g_ctx.cpuArch = QSysInfo::currentCpuArchitecture();
 	g_ctx.buildAbi = QSysInfo::buildAbi();
+	g_ctx.buildCommit = QStringLiteral(VEYON_CRASHREPORT_BUILD_COMMIT);
+	g_ctx.qtVersion = QString::fromLatin1( qVersion() );
+#ifdef Q_OS_WIN
+	g_ctx.sessionType = GetSystemMetrics( SM_REMOTESESSION ) ? QStringLiteral("remote") : QStringLiteral("console");
+#else
+	g_ctx.sessionType = qEnvironmentVariable( "XDG_SESSION_TYPE" );
+#endif
+	g_ctx.startedAt = QDateTime::currentDateTimeUtc().toString( Qt::ISODate );
 	g_ctx.logDirectory = logDirectory;
 	g_ctx.pid = QCoreApplication::applicationPid();
 

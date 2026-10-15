@@ -49,8 +49,8 @@ VncView::VncView( const ComputerControlInterface::Pointer& computerControlInterf
 		return computerControlInterface;
 	}() ),
 	m_previousUpdateMode( m_computerControlInterface->updateMode() ),
-	m_connection( computerControlInterface->connection()->vncConnection() ),
-	m_framebufferSize( m_connection->image().size() ),
+	m_connection(computerControlInterface->connection() ? computerControlInterface->connection()->vncConnection() : nullptr),
+	m_framebufferSize(m_connection ? m_connection->image().size() : QSize{}),
 	m_keyboardShortcutTrapper( VeyonCore::platform().inputDeviceFunctions().createKeyboardShortcutTrapper( nullptr ) )
 {
 	// handle/forward trapped keyboard shortcuts
@@ -299,7 +299,10 @@ void VncView::pressModifiers(const QList<KeyCode>& modifierKeyCodes)
 	for(auto keyCode : modifierKeyCodes)
 	{
 		m_modifierKeys[keyCode] = true;
-		m_connection->keyEvent(keyCode, true);
+		if (m_connection)
+		{
+			m_connection->keyEvent(keyCode, true);
+		}
 	}
 }
 
@@ -310,7 +313,10 @@ void VncView::unpressModifiers(const QList<KeyCode>& modifierKeyCodes)
 	for(auto keyCode : modifierKeyCodes)
 	{
 		m_modifierKeys.remove(keyCode);
-		m_connection->keyEvent(keyCode, false);
+		if (m_connection)
+		{
+			m_connection->keyEvent(keyCode, false);
+		}
 	}
 }
 
@@ -321,7 +327,10 @@ void VncView::unpressAllModifiers()
 	const auto keys = m_modifierKeys.keys();
 	for( auto key : keys )
 	{
-		m_connection->keyEvent( key, false );
+		if (m_connection)
+		{
+			m_connection->keyEvent(key, false);
+		}
 	}
 	m_modifierKeys.clear();
 }
@@ -342,14 +351,14 @@ void VncView::handleShortcut( KeyboardShortcutTrapper::Shortcut shortcut )
 		break;
 	case KeyboardShortcutTrapper::AltTab: key = XK_Tab; break;
 	case KeyboardShortcutTrapper::AltEsc: key = XK_Escape; break;
-	case KeyboardShortcutTrapper::AltSpace: key = XK_KP_Space; break;
+	case KeyboardShortcutTrapper::AltSpace: key = XK_space; break;
 	case KeyboardShortcutTrapper::AltF4: key = XK_F4; break;
 	case KeyboardShortcutTrapper::CtrlEsc: key = XK_Escape; break;
 	default:
 		break;
 	}
 
-	if( key )
+	if (key && m_connection)
 	{
 		m_connection->keyEvent( key, true );
 		m_connection->keyEvent( key, false );
@@ -392,7 +401,7 @@ bool VncView::handleEvent( QEvent* event )
 
 void VncView::hoverEventHandler( QHoverEvent* event )
 {
-	if( event && m_viewOnly == false )
+	if (m_connection && event && m_viewOnly == false)
 	{
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 		const auto pos = mapToFramebuffer(event->position().toPoint());
@@ -439,6 +448,7 @@ void VncView::keyEventHandler( QKeyEvent* event )
 		case Qt::Key_Backtab: return XK_Tab;
 		case Qt::Key_Backspace: return XK_BackSpace;
 		case Qt::Key_Return: return XK_Return;
+		case Qt::Key_Enter: return XK_KP_Enter;
 		case Qt::Key_Insert: return XK_Insert;
 		case Qt::Key_Delete: return XK_Delete;
 		case Qt::Key_Pause: return XK_Pause;
@@ -562,21 +572,23 @@ void VncView::keyEventHandler( QKeyEvent* event )
 
 	// handle Ctrl+Alt+Del replacement (Meta/Super key+Del)
 	if ((m_modifierKeys.contains(XK_Super_L) ||
-		 m_modifierKeys.contains(XK_Super_R) ||
-		 m_modifierKeys.contains(XK_Meta_L)) &&
+		 m_modifierKeys.contains(XK_Super_R)) &&
 		event->key() == Qt::Key_Delete)
 	{
 		if( pressed )
 		{
 			unpressAllModifiers();
-			m_connection->keyEvent( XK_Control_L, true );
-			m_connection->keyEvent( XK_Alt_L, true );
-			m_connection->keyEvent( XK_Delete, true );
-			m_connection->keyEvent( XK_Delete, false );
-			m_connection->keyEvent( XK_Alt_L, false );
-			m_connection->keyEvent( XK_Control_L, false );
-			key = 0;
+			if (m_connection)
+			{
+				m_connection->keyEvent( XK_Control_L, true );
+				m_connection->keyEvent( XK_Alt_L, true );
+				m_connection->keyEvent( XK_Delete, true );
+				m_connection->keyEvent( XK_Delete, false );
+				m_connection->keyEvent( XK_Alt_L, false );
+				m_connection->keyEvent( XK_Control_L, false );
+			}
 		}
+		key = 0;
 	}
 
 	// handle modifiers
@@ -601,11 +613,16 @@ void VncView::keyEventHandler( QKeyEvent* event )
 		break;
 	case XK_Shift_L:
 	case XK_Control_L:
-	case XK_Meta_L:
-	case XK_Meta_R:
 	case XK_Alt_L:
 	case XK_Super_L:
 	case XK_Super_R:
+	// [fork] on a Linux master, key is the native keysym and may also be one of these: track them
+	// so that unpressAllModifiers() releases them when focus is lost (no stuck modifier remotely)
+	case XK_Shift_R:
+	case XK_Control_R:
+	case XK_Alt_R:
+	case XK_Meta_L:
+	case XK_Meta_R:
 		if (pressed)
 		{
 			m_modifierKeys[key] = true;
@@ -617,7 +634,7 @@ void VncView::keyEventHandler( QKeyEvent* event )
 		break;
 	}
 
-	if (key)
+	if (key && m_connection)
 	{
 		m_connection->keyEvent(key, pressed);
 	}
@@ -666,22 +683,23 @@ void VncView::mouseEventHandler( QMouseEvent* event )
 	}
 
 	const auto pos = mapToFramebuffer( event->pos() );
-	m_connection->mouseEvent( pos.x(), pos.y(), m_buttonMask );
+	if (m_connection)
+	{
+		m_connection->mouseEvent(pos.x(), pos.y(), m_buttonMask);
+	}
 }
 
 
 
 void VncView::wheelEventHandler( QWheelEvent* event )
 {
-	if( event == nullptr )
+	if (event && m_connection)
 	{
-		return;
+		const auto p = mapToFramebuffer(event->position().toPoint());
+		const uint scrollButtonMask = (event->angleDelta().y() < 0) ? rfbButton5Mask : rfbButton4Mask;
+		m_connection->mouseEvent(p.x(), p.y(), m_buttonMask | scrollButtonMask);
+		m_connection->mouseEvent(p.x(), p.y(), m_buttonMask);
 	}
-
-	const auto p = mapToFramebuffer( event->position().toPoint() );
-	const uint scrollButtonMask = ( event->angleDelta().y() < 0 ) ? rfbButton5Mask : rfbButton4Mask;
-	m_connection->mouseEvent( p.x(), p.y(), m_buttonMask | scrollButtonMask );
-	m_connection->mouseEvent( p.x(), p.y(), m_buttonMask );
 }
 
 
@@ -702,12 +720,18 @@ void VncView::updateLocalCursor()
 
 void VncView::pressKey(KeyCode key)
 {
-	m_connection->keyEvent( key, true );
+	if (m_connection)
+	{
+		m_connection->keyEvent(key, true);
+	}
 }
 
 
 
 void VncView::unpressKey(KeyCode key)
 {
-	m_connection->keyEvent( key, false );
+	if (m_connection)
+	{
+		m_connection->keyEvent(key, false);
+	}
 }

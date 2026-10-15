@@ -38,6 +38,7 @@ LdapConfigurationPage::LdapConfigurationPage( LdapConfiguration& configuration, 
 	connect( ui->browseComputerMacAddressAttribute, &QPushButton::clicked, this, [this]() { browseAttribute( ui->computerMacAddressAttribute, m_configuration.computerTree() ); } );
 	connect( ui->browseComputerLocationAttribute, &QPushButton::clicked, this, [this]() { browseAttribute( ui->computerLocationAttribute, m_configuration.computerTree() ); } );
 	connect( ui->browseLocationNameAttribute, &QPushButton::clicked, this, [this]() { browseAttribute( ui->locationNameAttribute, m_configuration.computerTree() ); } );
+	connect(ui->browseUserGroupsAttribute, &QPushButton::clicked, this, [this]() { browseAttribute(ui->userGroupsAttribute, m_configuration.userTree()); });
 
 	CONNECT_BUTTON_SLOT( testBindInteractively )
 	CONNECT_BUTTON_SLOT( testBaseDn )
@@ -60,7 +61,9 @@ LdapConfigurationPage::LdapConfigurationPage( LdapConfiguration& configuration, 
 	CONNECT_BUTTON_SLOT( testComputersFilter )
 	CONNECT_BUTTON_SLOT( testComputerGroupsFilter )
 	CONNECT_BUTTON_SLOT( testComputerContainersFilter )
+	CONNECT_BUTTON_SLOT( testUserGroupsAttribute )
 
+	CONNECT_BUTTON_SLOT(testUserGroups)
 	CONNECT_BUTTON_SLOT( testGroupsOfUser )
 	CONNECT_BUTTON_SLOT( testGroupsOfComputer )
 	CONNECT_BUTTON_SLOT( testComputerObjectByIpAddress )
@@ -509,6 +512,58 @@ void LdapConfigurationPage::testComputerContainersFilter()
 	const auto count = ldapDirectory.computerLocations().count();
 
 	reportLdapFilterTestResult( tr( "computer containers" ), count, ldapDirectory.client().errorDescription() );
+}
+
+
+
+void LdapConfigurationPage::testUserGroupsAttribute()
+{
+	const auto username = QInputDialog::getText(this, tr("Enter username"),
+												tr("Please enter a user login name whose group memberships to query:"));
+	if (username.isEmpty() == false)
+	{
+		vDebug() << "[TEST][LDAP] Testing user groups attribute for user" << username;
+
+		LdapDirectory ldapDirectory(m_configuration);
+
+		const auto userObjects = ldapDirectory.users(username);
+
+		if (userObjects.isEmpty() == false)
+		{
+			reportLdapObjectQueryResults(tr("groups of user"), {ui->userGroupsAttribute->text()},
+										 ldapDirectory.groupsOfUser(userObjects.first()), ldapDirectory);
+		}
+		else
+		{
+			QMessageBox::warning(this, tr("User not found"),
+								 tr("Could not find a user with the name \"%1\". Please check the username "
+									"or the user tree parameter.").arg(username));
+		}
+	}
+}
+
+
+
+void LdapConfigurationPage::testUserGroups()
+{
+	vDebug() << "[TEST][LDAP] Querying all user groups";
+
+	QStringList parameters{
+		ui->groupTreeLabel->text(),
+		ui->userGroupsFilter->text(),
+		ui->groupMemberIdentification->title()
+	};
+
+	if (m_configuration.queryUserGroupsFromUserAttribute())
+	{
+		parameters = QStringList{
+			ui->userTreeLabel->text(),
+			ui->queryUserGroupsFromUserAttribute->text()
+		};
+	}
+
+	LdapDirectory ldapDirectory(m_configuration);
+	reportLdapObjectQueryResults(tr("user groups"), parameters, ldapDirectory.userGroups(), ldapDirectory);
 }
 
 

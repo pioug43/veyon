@@ -31,6 +31,7 @@
 
 #include "SystemTrayIcon.h"
 #include "FeatureWorkerManager.h"
+#include "PlatformCoreFunctions.h"
 #include "VeyonCore.h"
 #include "VeyonConfiguration.h"
 #include "VeyonServerInterface.h"
@@ -166,7 +167,10 @@ bool SystemTrayIcon::handleFeatureMessage( VeyonWorkerInterface& worker, const F
 			// quitter ici terminait prématurément le worker à chaque notification.
 			QTimer::singleShot( MessageAutoCloseInterval, messageBox, &QWidget::close );
 			messageBox->show();
-			messageBox->raise();
+			// activateWindow()+raise() (+ SetWindowPos sous Windows) via la plateforme ;
+			// stayOnTop=false : WindowStaysOnTopHint est déjà posé avant show(), et le
+			// reposer après show() masquerait la fenêtre (setWindowFlags → hide).
+			VeyonCore::platform().coreFunctions().raiseWindow( messageBox, false );
 		}
 		return true;
 

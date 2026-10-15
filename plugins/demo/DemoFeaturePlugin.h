@@ -166,4 +166,21 @@ private:
 	QVariantMap m_demoServerArguments{};
 	QTimer m_demoServerControlTimer{this};
 
+	// [fork] reprise de la démo sur un poste redémarré ou reconnecté (#1168)
+	void watchDemoClient( const ComputerControlInterface::Pointer& computerControlInterface,
+						  const FeatureMessage& startMessage );
+	void unwatchDemoClient( const ComputerControlInterface::Pointer& computerControlInterface );
+	struct DemoClientWatch
+	{
+		FeatureMessage startMessage;
+		bool wasConnected{false};
+		QMetaObject::Connection connection;
+		QMetaObject::Connection destroyedConnection;
+	};
+	QHash<ComputerControlInterface *, DemoClientWatch> m_demoClientWatches{};
+
+	// [fork] côté serveur : garde-fou si le worker ne réagit plus à StopDemoClient (#1178)
+	quint64 m_demoClientStartCount{0};
+	static constexpr auto DemoClientStopTimeout = 3000;
+
 };

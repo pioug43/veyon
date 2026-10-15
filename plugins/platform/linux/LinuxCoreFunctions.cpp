@@ -52,6 +52,29 @@
 #include <X11/extensions/dpms.h>
 
 
+static QString systemctlPath()
+{
+	// absolute paths only (no PATH lookup from a root service, see 10d16b545)
+	static const QStringList candidates{
+		QStringLiteral("/usr/bin/systemctl"),
+		QStringLiteral("/bin/systemctl"),
+		QStringLiteral("/usr/sbin/systemctl"),
+		QStringLiteral("/sbin/systemctl"),
+	};
+
+	for (const auto& candidate : candidates)
+	{
+		if (QFile::exists(candidate))
+		{
+			return candidate;
+		}
+	}
+
+	vWarning() << "systemctl not found in" << candidates;
+	return {};
+}
+
+
 LinuxCoreFunctions::LinuxCoreFunctions() :
 	m_isWaylandSession(qEnvironmentVariableIsSet("WAYLAND_DISPLAY"))
 {
@@ -156,13 +179,26 @@ void LinuxCoreFunctions::powerDown( bool installUpdates )
 
 void LinuxCoreFunctions::raiseWindow( QWidget* widget, bool stayOnTop )
 {
+	if (stayOnTop)
+	{
+		const auto isVisible = widget->isVisible();
+		const auto isFullscreen = widget->isFullScreen();
+
+		widget->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+
+		if (isFullscreen)
+		{
+			widget->showFullScreen();
+		}
+		else if (isVisible)
+		{
+			widget->show();
+		}
+	}
+
+	// after setWindowFlag(), which hides the widget: raise and activate the window shown again
 	widget->activateWindow();
 	widget->raise();
-
-	if( stayOnTop )
-	{
-		widget->setWindowFlag( Qt::WindowStaysOnTopHint, true );
-	}
 }
 
 
@@ -562,7 +598,7 @@ bool LinuxCoreFunctions::isSystemdManaged()
 		return false;
 	}
 
-	const auto status = ProcessHelper(QStringLiteral("systemctl"), {QStringLiteral("is-system-running")}).runAndReadAll().trimmed();
+	const auto status = ProcessHelper(::systemctlPath(), {QStringLiteral("is-system-running")}).runAndReadAll().trimmed();
 	return status.isEmpty() == false && status != "offline";
 }
 
@@ -571,8 +607,8 @@ bool LinuxCoreFunctions::isSystemdManaged()
 int LinuxCoreFunctions::systemctl( const QStringList& arguments )
 {
 	QProcess process;
-	process.start( QStringLiteral("systemctl"),
-							  QStringList( { QStringLiteral("--no-pager"), QStringLiteral("-q") } ) + arguments );
+	process.start(::systemctlPath(),
+				  QStringList({QStringLiteral("--no-pager"), QStringLiteral("-q")}) + arguments);
 
 	if( process.waitForFinished() && process.exitStatus() == QProcess::NormalExit )
 	{

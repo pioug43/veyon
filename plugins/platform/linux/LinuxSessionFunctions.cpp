@@ -22,6 +22,7 @@
  *
  */
 
+#include <QMutex>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDBusReply>
@@ -100,8 +101,37 @@ QString LinuxSessionFunctions::currentSessionHostName() const
  * fausse (voir aussi LinuxCoreFunctions::activeDesktopName, qui dégrade de la
  * même manière).
  */
+// Le gestionnaire d'erreur X11 est global au processus : deux relèves qui se chevauchent
+// (QtConcurrent, appels D-Bus lents juste après le login) pouvaient rétablir le gestionnaire
+// par défaut — qui appelle exit() — pendant que l'autre interrogeait encore une fenêtre.
+static QMutex& x11ErrorHandlerMutex()
+{
+	static QMutex mutex;
+	return mutex;
+}
+
+
+
+// Sous Wayland, DISPLAY désigne XWayland : il ne voit ni la fenêtre active ni les entrées des
+// applications Wayland natives. Mieux vaut « inconnu » qu'une donnée fausse (élève affiché
+// inactif alors qu'il travaille).
+static bool isWaylandSession()
+{
+	return qEnvironmentVariable( "XDG_SESSION_TYPE" ) == QLatin1String("wayland") ||
+		   qEnvironmentVariableIsSet( "WAYLAND_DISPLAY" );
+}
+
+
+
 QString LinuxSessionFunctions::currentSessionActiveApplication() const
 {
+	if( isWaylandSession() )
+	{
+		return {};
+	}
+
+	QMutexLocker x11ErrorHandlerLocker( &x11ErrorHandlerMutex() );
+
 	auto* display = XOpenDisplay( nullptr );
 	if( display == nullptr )
 	{
@@ -168,6 +198,13 @@ QString LinuxSessionFunctions::currentSessionActiveApplication() const
 int LinuxSessionFunctions::currentSessionIdleTime() const
 {
 #ifdef HAVE_XSCREENSAVER
+	if( isWaylandSession() )
+	{
+		return InvalidIdleTime;
+	}
+
+	QMutexLocker x11ErrorHandlerLocker( &x11ErrorHandlerMutex() );
+
 	auto* display = XOpenDisplay( nullptr );
 	if( display == nullptr )
 	{

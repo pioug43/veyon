@@ -162,6 +162,23 @@ void WindowsInputDeviceFunctions::stopOnScreenKeyboard()
 
 
 
+static LRESULT CALLBACK swallowPhysicalKeyboardInput( int code, WPARAM wParam, LPARAM lParam )
+{
+	if( code == HC_ACTION )
+	{
+		const auto* event = reinterpret_cast<const KBDLLHOOKSTRUCT *>( lParam );
+		// let injected input pass so that remote control by the teacher keeps working
+		if( ( event->flags & ( LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED ) ) == 0 )
+		{
+			return 1;
+		}
+	}
+
+	return CallNextHookEx( nullptr, code, wParam, lParam );
+}
+
+
+
 void WindowsInputDeviceFunctions::enableInterception()
 {
 	if( WindowsPlatformConfiguration( &VeyonCore::config() ).useInterceptionDriver() )
@@ -179,6 +196,20 @@ void WindowsInputDeviceFunctions::enableInterception()
 			vCritical() << "failed to create interception context";
 		}
 	}
+
+	// [fork] sans pilote Interception (non installé, ou bloqué par l'intégrité de la mémoire
+	// sous Windows 11), seul le grabKeyboard() de Qt restait actif : il n'intercepte pas la
+	// touche Windows et Win+Tab permettait de contourner le verrouillage (#1181). Un hook
+	// clavier bas niveau avale alors les frappes physiques (Ctrl+Alt+Suppr reste réservé au
+	// système). Il requiert une boucle de messages, fournie par le worker (LockWidget).
+	if( m_interceptionContext == nullptr && m_keyboardHook == nullptr )
+	{
+		m_keyboardHook = SetWindowsHookEx( WH_KEYBOARD_LL, swallowPhysicalKeyboardInput, GetModuleHandle( nullptr ), 0 );
+		if( m_keyboardHook == nullptr )
+		{
+			vWarning() << "failed to install low-level keyboard hook:" << GetLastError();
+		}
+	}
 }
 
 
@@ -190,6 +221,12 @@ void WindowsInputDeviceFunctions::disableInterception()
 		interception_destroy_context( m_interceptionContext );
 
 		m_interceptionContext = nullptr;
+	}
+
+	if( m_keyboardHook )
+	{
+		UnhookWindowsHookEx( m_keyboardHook );
+		m_keyboardHook = nullptr;
 	}
 }
 

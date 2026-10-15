@@ -297,8 +297,10 @@ void RestrictionEnforcer::terminateBlockedProcesses() const
 		}
 		if( process.isEmpty() == false )
 		{
+			// /proc/<pid>/comm est tronqué à 15 caractères : pkill -x ne trouverait jamais
+			// un nom plus long ; -i comme le garde exec de l'examen, qui ignore la casse
 			QProcess::startDetached( QStringLiteral("pkill"),
-				{ QStringLiteral("-x"), QStringLiteral("--"), process } );
+				{ QStringLiteral("-x"), QStringLiteral("-i"), QStringLiteral("--"), process.left( 15 ) } );
 		}
 	}
 #endif

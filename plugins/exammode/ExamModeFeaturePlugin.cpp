@@ -1791,7 +1791,10 @@ void ExamModeFeaturePlugin::killApplication( const QString& executable ) const
 	{
 		return;
 	}
-	QProcess::startDetached( QStringLiteral("pkill"), { QStringLiteral("-x"), QStringLiteral("--"), proc } );
+	// /proc/<pid>/comm est tronqué à 15 caractères (pkill -x ne trouverait jamais
+	// « chromium-browser ») ; -i comme le garde exec, qui compare sans la casse
+	QProcess::startDetached( QStringLiteral("pkill"),
+		{ QStringLiteral("-x"), QStringLiteral("-i"), QStringLiteral("--"), proc.left( ProcessCommMaxLength ) } );
 #endif
 }
 

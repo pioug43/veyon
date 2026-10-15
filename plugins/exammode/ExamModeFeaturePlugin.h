@@ -308,6 +308,7 @@ private:
 	// Délai laissé à l'étudiant pour se mettre en plein écran à l'activation.
 	// Configurable par le portail (Argument::FullscreenGraceSeconds), borné.
 	static constexpr int DefaultFullscreenGraceSeconds = 60;
+	static constexpr int ProcessCommMaxLength = 15;	// TASK_COMM_LEN - 1 (Linux)
 	static constexpr int MaxFullscreenGraceSeconds = 600;
 	int m_fullscreenGraceSeconds{DefaultFullscreenGraceSeconds};
 };

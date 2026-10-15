@@ -54,19 +54,23 @@
 
 static QString systemctlPath()
 {
-	static const auto DefaultSystemctlPath = QStringLiteral("/usr/bin/systemctl");
-	static const auto LegacySystemctlPath = QStringLiteral("/bin/systemctl");
+	// absolute paths only (no PATH lookup from a root service, see 10d16b545)
+	static const QStringList candidates{
+		QStringLiteral("/usr/bin/systemctl"),
+		QStringLiteral("/bin/systemctl"),
+		QStringLiteral("/usr/sbin/systemctl"),
+		QStringLiteral("/sbin/systemctl"),
+	};
 
-	if (QFile::exists(DefaultSystemctlPath))
+	for (const auto& candidate : candidates)
 	{
-		return DefaultSystemctlPath;
+		if (QFile::exists(candidate))
+		{
+			return candidate;
+		}
 	}
 
-	if (QFile::exists(LegacySystemctlPath))
-	{
-		return LegacySystemctlPath;
-	}
-
+	vWarning() << "systemctl not found in" << candidates;
 	return {};
 }
 
@@ -175,9 +179,6 @@ void LinuxCoreFunctions::powerDown( bool installUpdates )
 
 void LinuxCoreFunctions::raiseWindow( QWidget* widget, bool stayOnTop )
 {
-	widget->activateWindow();
-	widget->raise();
-
 	if (stayOnTop)
 	{
 		const auto isVisible = widget->isVisible();
@@ -194,6 +195,10 @@ void LinuxCoreFunctions::raiseWindow( QWidget* widget, bool stayOnTop )
 			widget->show();
 		}
 	}
+
+	// after setWindowFlag(), which hides the widget: raise and activate the window shown again
+	widget->activateWindow();
+	widget->raise();
 }
 
 

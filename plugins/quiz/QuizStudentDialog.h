@@ -27,6 +27,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QRadioButton;
+class QCloseEvent;
 class QTimer;
 class QVBoxLayout;
 class VeyonWorkerInterface;
@@ -43,6 +44,8 @@ private:
 	QuizStudentDialog( Feature::Uid featureUid, VeyonWorkerInterface* worker, const QString& quizId,
 					   const QJsonArray& questions, int durationSeconds );
 	~QuizStudentDialog() override = default;
+
+	void closeEvent( QCloseEvent* event ) override;
 
 	void showQuestion();
 	void submitCurrentAnswer();
@@ -72,4 +75,5 @@ private:
 	int m_remainingSeconds{0};
 	QTimer* m_ticker{nullptr};
 	bool m_finished{false};
+	bool m_shuttingDown{false};
 };

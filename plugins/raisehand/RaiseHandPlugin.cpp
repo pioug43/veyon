@@ -124,6 +124,7 @@ bool RaiseHandPlugin::stopFeature( VeyonMasterInterface& master, const Feature& 
 	if( m_masterWindow )
 	{
 		m_masterWindow->close();
+		m_masterWindow->deleteLater();
 	}
 
 	return controlFeature( m_raiseHandFeature.uid(), Operation::Stop, {}, computerControlInterfaces );

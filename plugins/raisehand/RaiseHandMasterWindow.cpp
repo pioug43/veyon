@@ -32,7 +32,9 @@ RaiseHandMasterWindow::RaiseHandMasterWindow( RaiseHandPlugin* plugin, QWidget* 
 	m_plugin( plugin )
 {
 	setWindowTitle( tr( "Help requests" ) );
-	setAttribute( Qt::WA_DeleteOnClose );
+	// pas de WA_DeleteOnClose : fermer la file la masque seulement ; détruite, elle ne
+	// recevait plus les demandes suivantes (seul un arrêt du mode, qui efface toutes les
+	// demandes des élèves, permettait de la rouvrir). Détruite à l'arrêt du mode.
 	resize( 420, 320 );
 
 	auto* const layout = new QVBoxLayout( this );

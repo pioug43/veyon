@@ -72,7 +72,9 @@ void ChatStudentWindow::appendTeacherMessage( const QString& text )
 	}
 
 	s_instance->appendMessage( tr( "Teacher" ), text, false );
-	s_instance->popup();
+	// sans prendre le focus : l'élève peut être en train de taper ailleurs, ses frappes
+	// (et un Entrée qui enverrait un texte partiel) partiraient sinon dans le chat
+	s_instance->popup( false );
 }
 
 
@@ -148,8 +150,10 @@ void ChatStudentWindow::appendMessage( const QString& sender, const QString& tex
 
 
 
-void ChatStudentWindow::popup()
+void ChatStudentWindow::popup( bool activate )
 {
+	setAttribute( Qt::WA_ShowWithoutActivating, activate == false );
+
 	if( isMinimized() )
 	{
 		showNormal();
@@ -160,6 +164,9 @@ void ChatStudentWindow::popup()
 	}
 
 	raise();
-	activateWindow();
+	if( activate )
+	{
+		activateWindow();
+	}
 	QApplication::alert( this );
 }

@@ -9,6 +9,7 @@
  * version 2 of the License, or (at your option) any later version.
  */
 
+#include <QCloseEvent>
 #include <QCheckBox>
 #include <QDateTime>
 #include <QHBoxLayout>
@@ -102,6 +103,7 @@ void QuizStudentDialog::shutdown()
 {
 	if( s_instance )
 	{
+		s_instance->m_shuttingDown = true;	// arrêt demandé par l'enseignant : rien à envoyer
 		s_instance->close();
 		s_instance->deleteLater();
 		s_instance = nullptr;
@@ -213,6 +215,22 @@ void QuizStudentDialog::submitCurrentAnswer()
 					  QDateTime::currentDateTimeUtc().toString( Qt::ISODate ) );
 
 	m_worker->sendFeatureMessageReply( reply );
+}
+
+
+
+void QuizStudentDialog::closeEvent( QCloseEvent* event )
+{
+	// fermeture par l'élève (bouton X, Alt+F4) avant la fin : envoyer la réponse en cours
+	// et terminer le quiz, sinon QuizFinished n'était jamais émis, la réponse était perdue
+	// et le quiz ne pouvait plus être rouvert
+	if( m_shuttingDown == false && m_finished == false )
+	{
+		submitCurrentAnswer();
+		finish();
+	}
+
+	QWidget::closeEvent( event );
 }
 
 

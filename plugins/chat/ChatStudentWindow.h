@@ -42,7 +42,7 @@ private:
 
 	void sendMessage();
 	void appendMessage( const QString& sender, const QString& text, bool own );
-	void popup();
+	void popup( bool activate = true );
 
 	static QPointer<ChatStudentWindow> s_instance;
 

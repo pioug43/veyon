@@ -24,6 +24,7 @@
 
 #include <QMessageBox>
 #include <QScreen>
+#include <QTimer>
 
 #include "AuthenticationCredentials.h"
 #include "Computer.h"
@@ -362,6 +363,26 @@ bool DemoFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server,
 			return false;
 		}
 
+		if (message.command<FeatureCommand>() == FeatureCommand::StartDemoClient)
+		{
+			++m_demoClientStartCount;
+		}
+		else if (message.command<FeatureCommand>() == FeatureCommand::StopDemoClient)
+		{
+			// un worker bloqué (écran noir + spinner, #1178) n'appliquerait jamais l'arrêt :
+			// s'il tourne encore peu après sans nouveau démarrage entre-temps, on l'arrête
+			const auto featureUid = message.featureUid();
+			const auto startCount = m_demoClientStartCount;
+			auto* featureWorkerManager = &server.featureWorkerManager();
+			QTimer::singleShot(DemoClientStopTimeout, featureWorkerManager, [=, this]() {
+				if (m_demoClientStartCount == startCount && featureWorkerManager->isWorkerRunning(featureUid))
+				{
+					vWarning() << "demo client worker still running after stop request - stopping it";
+					featureWorkerManager->stopWorker(featureUid);
+				}
+			});
+		}
+
 		if (message.command<FeatureCommand>() == FeatureCommand::StartDemoClient &&
 			message.argument( Argument::DemoServerHost ).toString().isEmpty() )
 		{
@@ -642,12 +663,18 @@ bool DemoFeaturePlugin::controlDemoClient( Feature::Uid featureUid, Operation op
 			}
 		}
 
-		sendFeatureMessage(FeatureMessage{featureUid, FeatureCommand::StartDemoClient}
-								.addArgument( Argument::DemoAccessToken, demoAccessToken )
-								.addArgument( Argument::DemoServerHost, demoServerHost )
-								.addArgument( Argument::DemoServerPort, demoServerPort )
-								.addArgument( Argument::Viewport, viewport ),
-							computerControlInterfaces );
+		const FeatureMessage startMessage{ FeatureMessage{featureUid, FeatureCommand::StartDemoClient}
+											   .addArgument( Argument::DemoAccessToken, demoAccessToken )
+											   .addArgument( Argument::DemoServerHost, demoServerHost )
+											   .addArgument( Argument::DemoServerPort, demoServerPort )
+											   .addArgument( Argument::Viewport, viewport ) };
+
+		sendFeatureMessage( startMessage, computerControlInterfaces );
+
+		for( const auto& computerControlInterface : computerControlInterfaces )
+		{
+			watchDemoClient( computerControlInterface, startMessage );
+		}
 
 		return true;
 	}
@@ -659,6 +686,7 @@ bool DemoFeaturePlugin::controlDemoClient( Feature::Uid featureUid, Operation op
 		for( const auto& computerControlInterface : computerControlInterfaces )
 		{
 			m_demoServerClients.removeAll( computerControlInterface );
+			unwatchDemoClient( computerControlInterface );
 
 			if (enableUpdates &&
 				computerControlInterface->updateMode() == ComputerControlInterface::UpdateMode::Disabled)
@@ -674,6 +702,58 @@ bool DemoFeaturePlugin::controlDemoClient( Feature::Uid featureUid, Operation op
 
 	return false;
 }
+
+
+void DemoFeaturePlugin::watchDemoClient( const ComputerControlInterface::Pointer& computerControlInterface,
+										 const FeatureMessage& startMessage )
+{
+	unwatchDemoClient( computerControlInterface );
+
+	auto* controlInterface = computerControlInterface.data();
+
+	DemoClientWatch watch;
+	watch.startMessage = startMessage;
+	watch.wasConnected = controlInterface->state() == ComputerControlInterface::State::Connected;
+	watch.connection = connect( controlInterface, &ComputerControlInterface::stateChanged, this,
+								[this, controlInterface]() {
+		const auto it = m_demoClientWatches.find( controlInterface );
+		if( it == m_demoClientWatches.end() )
+		{
+			return;
+		}
+
+		const auto connected = controlInterface->state() == ComputerControlInterface::State::Connected;
+		// avec « imposer le mode sélectionné », VeyonMaster::enforceDesignatedMode() s'en charge déjà
+		if( connected && it->wasConnected == false &&
+			VeyonCore::config().enforceSelectedModeForClients() == false )
+		{
+			// le poste revient (redémarrage, coupure réseau) alors que la démo est toujours
+			// diffusée : le serveur du poste a perdu le client de démo, on le relance
+			vDebug() << "resuming demo on" << controlInterface->computerName();
+			controlInterface->sendFeatureMessage( it->startMessage );
+		}
+		it->wasConnected = connected;
+	} );
+
+	m_demoClientWatches.insert( controlInterface, watch );
+
+	connect( controlInterface, &QObject::destroyed, this, [this, controlInterface]() {
+		m_demoClientWatches.remove( controlInterface );
+	}, Qt::UniqueConnection );
+}
+
+
+
+void DemoFeaturePlugin::unwatchDemoClient( const ComputerControlInterface::Pointer& computerControlInterface )
+{
+	const auto it = m_demoClientWatches.find( computerControlInterface.data() );
+	if( it != m_demoClientWatches.end() )
+	{
+		disconnect( it->connection );
+		m_demoClientWatches.erase( it );
+	}
+}
+
 
 
 IMPLEMENT_CONFIG_PROXY(DemoConfiguration)

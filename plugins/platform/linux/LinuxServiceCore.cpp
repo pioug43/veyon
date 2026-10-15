@@ -387,10 +387,18 @@ void LinuxServiceCore::startServers()
 	auto sessions = LinuxSessionFunctions::listSessions();
 
 	// Tri stable par rang : la session UTILISATEUR d'abord ; le greeter (écran
-	// de connexion) seulement si personne n'est connecté.
+	// de connexion) seulement si personne n'est connecté. Rangs calculés une fois par
+	// session (un appel D-Bus synchrone chacun) : dans le comparateur, ils étaient
+	// redemandés à chaque comparaison, et un appel expiré rendait le comparateur
+	// incohérent (ordre strict faible violé, tri indéfini).
+	QHash<QString, int> ranks;
+	for( const auto& session : std::as_const( sessions ) )
+	{
+		ranks.insert( session, sessionSelectionRank( session ) );
+	}
 	std::stable_sort( sessions.begin(), sessions.end(),
-		[]( const QString& a, const QString& b ) {
-			return sessionSelectionRank( a ) < sessionSelectionRank( b );
+		[&ranks]( const QString& a, const QString& b ) {
+			return ranks.value( a ) < ranks.value( b );
 		} );
 
 	for( const auto& s : sessions )

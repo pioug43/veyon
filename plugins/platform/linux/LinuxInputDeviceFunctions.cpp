@@ -186,6 +186,13 @@ void LinuxInputDeviceFunctions::processX11HierarchyEvents()
 	if( display == nullptr )
 		return;
 
+	// XIQueryDevice/XIGrabDevice ci-dessous peuvent lire un nouvel XI_HierarchyChanged
+	// dans la file Xlib : la socket est alors vide, le QSocketNotifier ne se redéclenche
+	// pas et l'événement resterait en file (un esclave d'un clavier composite branché
+	// pendant le verrouillage échapperait au blocage). On reboucle donc tant que la file
+	// locale n'est pas vide.
+	do
+	{
 	bool hierarchyChanged = false;
 
 	while( XPending( display ) > 0 )
@@ -230,6 +237,8 @@ void LinuxInputDeviceFunctions::processX11HierarchyEvents()
 						   "have regained control of this computer";
 		}
 	}
+	}
+	while( XEventsQueued( display, QueuedAlready ) > 0 );
 }
 
 

@@ -1028,6 +1028,8 @@ void VncConnection::enqueueEvent(VncEvent* event)
 {
 	if( state() != State::Connected )
 	{
+		// la file prend possession de l'événement : ne pas le perdre ici
+		delete event;
 		return;
 	}
 

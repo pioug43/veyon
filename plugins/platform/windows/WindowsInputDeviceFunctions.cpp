@@ -167,10 +167,14 @@ static LRESULT CALLBACK swallowPhysicalKeyboardInput( int code, WPARAM wParam, L
 	if( code == HC_ACTION )
 	{
 		const auto* event = reinterpret_cast<const KBDLLHOOKSTRUCT *>( lParam );
-		// let injected input pass so that remote control by the teacher keeps working, and let key
-		// releases pass so that a key held while locking (Alt, Win…) does not stay stuck afterwards
+		// let input injected at our integrity level or above pass so that remote control by the
+		// teacher (veyon-server, SYSTEM) keeps working - but not input injected by a lower
+		// integrity process, e.g. a user program started before locking - and let key releases
+		// pass so that a key held while locking (Alt, Win…) does not stay stuck afterwards
 		const auto isKeyRelease = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
-		if( isKeyRelease == false && ( event->flags & ( LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED ) ) == 0 )
+		const auto isTrustedInjection = ( event->flags & LLKHF_INJECTED ) &&
+										( event->flags & LLKHF_LOWER_IL_INJECTED ) == 0;
+		if( isKeyRelease == false && isTrustedInjection == false )
 		{
 			return 1;
 		}

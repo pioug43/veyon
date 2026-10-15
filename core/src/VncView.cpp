@@ -616,6 +616,14 @@ void VncView::keyEventHandler( QKeyEvent* event )
 	case XK_Alt_L:
 	case XK_Super_L:
 	case XK_Super_R:
+	// [fork] on a Linux master, key is the native keysym and may also be one of these: track them
+	// so that unpressAllModifiers() releases them when focus is lost (no stuck modifier remotely)
+	case XK_Shift_R:
+	case XK_Control_R:
+	case XK_Alt_R:
+	case XK_Meta_L:
+	case XK_Meta_R:
+	case XK_ISO_Level3_Shift:
 		if (pressed)
 		{
 			m_modifierKeys[key] = true;

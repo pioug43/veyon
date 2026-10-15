@@ -23,6 +23,7 @@
  */
 
 #include <QtConcurrent>
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QMessageBox>
 #include <QNetworkInterface>
@@ -479,8 +480,19 @@ void PowerControlFeaturePlugin::displayShutdownTimeout( int shutdownTimeout )
 		updateDialog( &dialog, dialog.value()+1 );
 	} );
 
-	while (dialog.exec() != QDialog::Accepted)
+	// the countdown can't be dismissed (Esc/X re-show it), but if the event loop no longer runs
+	// (application quitting, worker being stopped) exec() returns at once: don't spin forever
+	// at 100% CPU, carry out the announced power down instead
+	int immediateReturns = 0;
+	while (immediateReturns < MaximumImmediateDialogReturns)
 	{
+		QElapsedTimer execTimer;
+		execTimer.start();
+		if (dialog.exec() == QDialog::Accepted)
+		{
+			break;
+		}
+		immediateReturns = execTimer.elapsed() < ImmediateDialogReturnTime ? immediateReturns + 1 : 0;
 	}
 
 	VeyonCore::platform().coreFunctions().powerDown(false);

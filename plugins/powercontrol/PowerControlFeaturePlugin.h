@@ -113,6 +113,9 @@ protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+	static constexpr int MaximumImmediateDialogReturns = 10;
+	static constexpr qint64 ImmediateDialogReturnTime = 50;
+
 	bool confirmFeatureExecution( const Feature& feature, bool all, QWidget* parent );
 	static bool broadcastWOLPacket( QString macAddress );
 

@@ -495,9 +495,6 @@ bool CourseRestrictionsPlugin::startEnforcement( const FeatureMessage& message )
 		return false;
 	}
 
-	m_profileId = message.argument( Argument::ProfileId ).toString();
-	m_profileName = message.argument( Argument::ProfileName ).toString().left( MaximumProfileNameLength );
-
 	QString platform;
 #if defined(Q_OS_WIN)
 	platform = QStringLiteral("windows");
@@ -581,6 +578,29 @@ bool CourseRestrictionsPlugin::startEnforcement( const FeatureMessage& message )
 			}
 		}
 	}
+
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS) && !defined(Q_OS_MAC)
+	// Linux : seul /etc/hosts est disponible (pas de PAC) ; les règles structurées
+	// « block » sur un domaine simple y sont reportées au lieu d'être ignorées sans bruit
+	for( const auto& rule : std::as_const( policy.urlRules ) )
+	{
+		if( rule.action == RestrictionRules::RuleAction::Block && rule.regularExpression == false )
+		{
+			for( const auto& domain : RestrictionRules::normalizeDomains( { rule.expression } ) )
+			{
+				if( policy.blockedDomains.contains( domain ) == false )
+				{
+					policy.blockedDomains.append( domain );
+				}
+			}
+		}
+	}
+#endif
+
+	// le profil n'est retenu qu'une fois toutes les validations passées : un profil
+	// refusé pendant une séance ne doit pas apparaître comme le profil appliqué
+	m_profileId = message.argument( Argument::ProfileId ).toString();
+	m_profileName = message.argument( Argument::ProfileName ).toString().left( MaximumProfileNameLength );
 
 	const bool applied = m_enforcer.apply( policy );
 

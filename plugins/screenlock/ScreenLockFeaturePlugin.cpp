@@ -198,6 +198,12 @@ bool ScreenLockFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server
 	{
 		if (message.command<FeatureCommand>() == FeatureCommand::StopLock)
 		{
+			if (m_inputDevicesLockedByServer)
+			{
+				VeyonCore::platform().inputDeviceFunctions().enableInputDevices();
+				m_inputDevicesLockedByServer = false;
+			}
+
 			if (server.featureWorkerManager().isWorkerRunning(message.featureUid()))
 				server.featureWorkerManager().sendMessageToManagedSystemWorker(message);
 
@@ -206,7 +212,15 @@ bool ScreenLockFeaturePlugin::handleFeatureMessage( VeyonServerInterface& server
 
 		if( VeyonCore::platform().sessionFunctions().currentSessionHasUser() == false )
 		{
-			vDebug() << "not locking screen since not running in a user session";
+			// [fork] sans session utilisateur (écran de connexion), aucun worker ne peut
+			// afficher le LockWidget qui bloque désormais les entrées (8f75b58a1) : on
+			// conserve le comportement antérieur en bloquant depuis le serveur
+			if (m_inputDevicesLockedByServer == false)
+			{
+				VeyonCore::platform().inputDeviceFunctions().disableInputDevices();
+				m_inputDevicesLockedByServer = true;
+			}
+			vDebug() << "not locking screen since not running in a user session - input devices locked";
 			return true;
 		}
 

@@ -118,5 +118,6 @@ private:
 	const FeatureList m_features;
 
 	LockWidget* m_lockWidget;
+	bool m_inputDevicesLockedByServer{false};
 
 };

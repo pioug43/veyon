@@ -25,7 +25,7 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QWidget>
-#include <QWinEventNotifier>
+#include <QTimer>
 #include <qpa/qplatformnativeinterface.h>
 
 #include <shlobj.h>
@@ -130,10 +130,28 @@ void WindowsCoreFunctions::writeToNativeLoggingSystem( const QString& message, L
 
 QObject* WindowsCoreFunctions::notifyOnStandardInputReadyRead(const NotifierCallback& callback)
 {
-	auto notifier = new QWinEventNotifier(GetStdHandle(STD_INPUT_HANDLE));
-	QObject::connect(notifier, &QWinEventNotifier::activated,
-					 QCoreApplication::instance(),
-					 [notifier, callback]() { callback(notifier); });
+	// QWinEventNotifier on the anonymous pipe used as stdin does not signal reliably (see
+	// upstream 285b2eb36, causing workers to never authenticate), therefore poll the pipe
+	// from the event loop - no extra thread to synchronize or tear down
+	const auto stdinHandle = GetStdHandle(STD_INPUT_HANDLE);
+
+	auto notifier = new QTimer(QCoreApplication::instance());
+	notifier->setInterval(StandardInputPollInterval);
+	QObject::connect(notifier, &QTimer::timeout, notifier, [notifier, stdinHandle, callback]() {
+		DWORD bytesAvailable = 0;
+		if (PeekNamedPipe(stdinHandle, nullptr, 0, nullptr, &bytesAvailable, nullptr) == false)
+		{
+			// pipe closed or no pipe at all: let the callback read (and report) once, then stop
+			notifier->stop();
+			callback(notifier);
+		}
+		else if (bytesAvailable > 0)
+		{
+			callback(notifier);
+		}
+	});
+	notifier->start();
+
 	return notifier;
 }
 

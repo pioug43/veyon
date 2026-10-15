@@ -61,6 +61,12 @@ FeatureWorkerManagerConnection::FeatureWorkerManagerConnection(VeyonWorkerInterf
 
 void FeatureWorkerManagerConnection::setAuthToken(const QByteArray& authToken)
 {
+	if (m_authToken.isEmpty() == false)
+	{
+		vCritical() << "auth token already set";
+		return;
+	}
+
 	m_authToken = authToken;
 
 	if (m_socket.state() == QTcpSocket::ConnectedState)

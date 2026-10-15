@@ -98,6 +98,7 @@ public:
 
 private:
 	static constexpr int ConsoleOutputBufferSize = 256;
+	static constexpr int StandardInputPollInterval = 50;
 	static constexpr DWORD DefaultProcessTerminationTimeout = 5000;
 	static constexpr size_t ScreenSaverSettingsCount = 3;
 

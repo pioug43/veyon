@@ -26,6 +26,7 @@
 #include "rfb/rfbproto.h"
 
 #include <QTcpSocket>
+#include <QTimer>
 
 #include "DemoConfiguration.h"
 #include "DemoServer.h"
@@ -73,6 +74,14 @@ void DemoServerConnection::run()
 	connect( m_socket, &QTcpSocket::readyRead, this, &DemoServerConnection::processClient, Qt::DirectConnection );
 	connect( m_socket, &QTcpSocket::disconnected, this, &DemoServerConnection::quit );
 
+	// [fork] les clients en mode Live (3bdc9cc7d) n'émettent pas de nouvelle requête
+	// tant que la précédente n'a pas reçu de réponse : une requête sans donnée à envoyer
+	// est donc mémorisée et resservie par un minuteur unique (jamais plusieurs en vol)
+	m_pendingUpdateTimer = new QTimer;
+	m_pendingUpdateTimer->setSingleShot(true);
+	m_pendingUpdateTimer->setInterval(qMax(m_framebufferUpdateInterval, int(MinimumPendingUpdateRetryInterval)));
+	connect(m_pendingUpdateTimer, &QTimer::timeout, m_socket, [this]() { sendFramebufferUpdate(); }, Qt::DirectConnection);
+
 	m_serverProtocol = new DemoServerProtocol( m_demoAccessToken, m_socket, &m_vncServerClient ),
 
 	m_serverProtocol->setServerInitMessage( m_demoServer->serverInitMessage() );
@@ -80,6 +89,8 @@ void DemoServerConnection::run()
 
 	exec();
 
+	delete m_pendingUpdateTimer;
+	m_pendingUpdateTimer = nullptr;
 	delete m_serverProtocol;
 	delete m_socket;
 
@@ -188,7 +199,8 @@ void DemoServerConnection::sendFramebufferUpdate()
 	const auto framebufferUpdateMessageCount = framebufferUpdateMessages.count();
 	const auto offset = m_fbuSequenceNumber - m_demoServer->fbuSequenceNumber();
 
-	if (offset >= 0 && m_demoServer->epochId() == m_epochId)
+	const auto inSync = offset >= 0 && m_demoServer->epochId() == m_epochId;
+	if (inSync)
 	{
 		for (qsizetype i = offset; i < framebufferUpdateMessageCount; ++i)
 		{
@@ -207,5 +219,17 @@ void DemoServerConnection::sendFramebufferUpdate()
 	for (const auto& message : std::as_const(messages))
 	{
 		m_socket->write(message);
+	}
+
+	if (m_pendingUpdateTimer)
+	{
+		if (messages.isEmpty() == false)
+		{
+			m_pendingUpdateTimer->stop();
+		}
+		else if (inSync && m_pendingUpdateTimer->isActive() == false)
+		{
+			m_pendingUpdateTimer->start();
+		}
 	}
 }

@@ -55,8 +55,7 @@ public:
 	}
 
 Q_SIGNALS:
-	void serverMessageProcessed(VncProxyConnection* connection);
-	void connectionEstablished(VncProxyConnection* connection);
+	void connectionSynchronized(VncProxyConnection* connection);
 	void connectionClosed( VncProxyConnection* connection );
 
 private:

@@ -545,7 +545,7 @@ void ExamModeFeaturePlugin::sendAsyncFeatureMessages( VeyonServerInterface& serv
 	}
 
 	// sendAsyncFeatureMessages() est invoqué pour CHAQUE message serveur proxifié
-	// (VncProxyConnection::serverMessageProcessed, Qt::DirectConnection, en pleine
+	// (VncProxyConnection::clientStreamSynchronized, Qt::DirectConnection, en pleine
 	// boucle de lecture). Comme MonitoringMode, on ne doit émettre que lorsque le
 	// statut a réellement changé POUR CE CLIENT : émettre un ExamStatus par trame
 	// injecte un message de fonctionnalité dans le flux RFB à chaque mise à jour,

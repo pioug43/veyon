@@ -131,11 +131,8 @@ void VncProxyServer::acceptConnection()
 			continue;
 		}
 
-		connect(connection, &VncProxyConnection::serverMessageProcessed, this,
-			[=, this]() { Q_EMIT serverMessageProcessed(connection); }, Qt::DirectConnection);
-
-		connect(connection, &VncProxyConnection::connectionEstablished, this,
-			[=, this]() { Q_EMIT connectionEstablished(connection); }, Qt::DirectConnection);
+		connect(connection, &VncProxyConnection::clientStreamSynchronized, this,
+				[=, this]() { Q_EMIT connectionSynchronized(connection); }, Qt::DirectConnection);
 
 		connect(connection, &VncProxyConnection::clientConnectionClosed, this, [=, this]() { closeConnection(connection); });
 		connect(connection, &VncProxyConnection::serverConnectionClosed, this, [=, this]() { closeConnection(connection); });

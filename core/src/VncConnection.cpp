@@ -392,6 +392,7 @@ void VncConnection::applyQualityChange()
 	{
 		setControlFlag(ControlFlag::QualityChanged, false);
 		updateEncodingSettingsFromQuality();
+		m_client->appData.useRemoteCursor = m_useRemoteCursor ? TRUE : FALSE;
 		SetFormatAndEncodings(m_client);
 	}
 }
@@ -400,14 +401,10 @@ void VncConnection::applyQualityChange()
 
 void VncConnection::setUseRemoteCursor( bool enabled )
 {
+	// comme setQuality() : m_client appartient au thread de connexion, qui peut le libérer
+	// à tout moment ; le réglage est appliqué par ce thread (applyQualityChange())
 	m_useRemoteCursor = enabled;
-
-	if( m_client )
-	{
-		m_client->appData.useRemoteCursor = enabled ? TRUE : FALSE;
-
-		enqueueEvent(new VncUpdateFormatAndEncodingsEvent);
-	}
+	setControlFlag( ControlFlag::QualityChanged, true );
 }
 
 

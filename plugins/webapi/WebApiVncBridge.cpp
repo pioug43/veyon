@@ -22,6 +22,8 @@
  *
  */
 
+#include <atomic>
+
 #include <QAbstractSocket>
 #include <QBuffer>
 #include <QImage>
@@ -75,12 +77,9 @@ WebApiVncBridge::WebApiVncBridge( QWebSocket* socket, ComputerControlInterface::
 	// le chemin de capture GDI n'inclut pas le curseur dans le framebuffer. On le
 	// COMPOSITE ensuite dans les trames sortantes à sa position distante réelle
 	// (cf. appendRect) — le client noVNC garde son point local comme repère.
-	// setUseRemoteCursor modifie l'état d'une connexion vivant dans SON thread ; on
-	// le planifie là-bas (comme setLiveUpdateMode) — les signaux sont déjà reçus en
-	// QueuedConnection, un appel direct ici serait une data race.
-	QMetaObject::invokeMethod( vncConnection, [vncConnection]() {
-		vncConnection->setUseRemoteCursor( true );
-	}, Qt::QueuedConnection );
+	// setUseRemoteCursor() est sûr depuis n'importe quel thread : la connexion applique
+	// le réglage dans son propre thread RFB
+	vncConnection->setUseRemoteCursor( true );
 
 	// make the upstream connection deliver a continuous, reactive stream
 	setLiveUpdateMode();
@@ -718,7 +717,14 @@ int WebApiVncBridge::appendRect( QByteArray& rectsData, const QImage& image, con
 			rectsData += jpegData;
 			return 1;
 		}
-		// encodage JPEG indisponible (plugin d'image manquant ?) : repli Raw
+		// encodage JPEG indisponible (plugin d'image manquant ?) : repli Raw, signalé une
+		// fois — 10 à 20 fois plus de bande passante passait sinon inaperçu
+		static std::atomic_bool jpegFailureReported{false};
+		if( jpegFailureReported.exchange( true ) == false )
+		{
+			vWarning() << "JPEG encoding unavailable (Qt image format plugin missing?) - "
+						  "falling back to Raw encoding for the VNC bridge";
+		}
 	}
 
 	appendUint16( rectsData, static_cast<quint16>( rect.x() ) );

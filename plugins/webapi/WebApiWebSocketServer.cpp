@@ -22,6 +22,7 @@
  *
  */
 
+#include <QPointer>
 #include <QHostAddress>
 #include <QTcpSocket>
 #include <QTimer>
@@ -122,13 +123,21 @@ void WebApiWebSocketServer::onNewConnection()
 		// 60 s par défaut), qui couperait la prise de main en pleine session.
 		// On le ré-arme donc périodiquement tant que le pont est vivant — le
 		// timer, enfant du pont, meurt avec lui.
+		// Intervalle borné par le délai d'inactivité configuré (un tiers) : fixe à 20 s, il
+		// coupait la prise de main dès que ConnectionIdleTimeout était réglé en dessous.
+		// Connexion WebAPI disparue (DELETE, durée de vie atteinte) : le pont est fermé
+		// au lieu de rester ouvert sans connexion derrière lui.
 		auto* keepAliveTimer = new QTimer( bridge );
-		connect( keepAliveTimer, &QTimer::timeout, this, [this, uid]() {
-			if( m_controller )
+		const QPointer<QWebSocket> bridgeSocket( socket );
+		connect( keepAliveTimer, &QTimer::timeout, this, [this, uid, bridgeSocket]() {
+			if( m_controller && m_controller->lookupConnectionByUid( uid ).isNull() && bridgeSocket )
 			{
-				m_controller->lookupConnectionByUid( uid );
+				vDebug() << "closing WebSocket bridge of removed WebAPI connection" << uid;
+				bridgeSocket->close( QWebSocketProtocol::CloseCodeNormal,
+									 QStringLiteral("connection removed") );
 			}
 		} );
-		keepAliveTimer->start( ConnectionKeepAliveInterval );
+		const auto idleTimeoutMs = qMax( 1, m_configuration.connectionIdleTimeout() ) * 1000;
+		keepAliveTimer->start( qBound( MinimumKeepAliveInterval, idleTimeoutMs / 3, ConnectionKeepAliveInterval ) );
 	}
 }

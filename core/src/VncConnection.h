@@ -262,7 +262,7 @@ private:
 	QString m_host;
 	int m_port;
 	int m_defaultPort{-1};
-	bool m_useRemoteCursor{false};
+	std::atomic_bool m_useRemoteCursor{false};
 
 	// thread and timing control
 	QMutex m_globalMutex;

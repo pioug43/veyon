@@ -47,6 +47,7 @@ private:
 	// période de ré-armement de l'idle-timer de la connexion WebAPI pendant
 	// une session de pont active — doit rester < ConnectionIdleTimeout (60 s)
 	static constexpr int ConnectionKeepAliveInterval = 20000;
+	static constexpr int MinimumKeepAliveInterval = 1000;
 
 	void onNewConnection();
 

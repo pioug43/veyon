@@ -10,6 +10,8 @@
  * version 2 of the License, or (at your option) any later version.
  */
 
+#include <QTimer>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QMessageBox>
 #include <QUuid>
@@ -234,6 +236,15 @@ bool SurveyPlugin::handleFeatureMessage( VeyonServerInterface& server,
 		m_masterContext = messageContext;
 	}
 
+	// un arrêt ne doit pas lancer un worker dans la session de l'élève juste pour
+	// l'arrêter : le maître envoie l'arrêt de chaque fonctionnalité à tous les postes
+	// à chaque changement de mode et à sa fermeture
+	if( message.command<FeatureCommand>() == FeatureCommand::StopSurvey &&
+		server.featureWorkerManager().isWorkerRunningOrPending( message.featureUid() ) == false )
+	{
+		return true;
+	}
+
 	// le dialogue est une interface utilisateur : il doit s'afficher dans la
 	// session de l'utilisateur, pas via le worker SYSTEM (session 0)
 	server.featureWorkerManager().sendMessageToUnmanagedSessionWorker( message );
@@ -272,6 +283,8 @@ bool SurveyPlugin::handleFeatureMessage( VeyonWorkerInterface& worker, const Fea
 
 	case FeatureCommand::StopSurvey:
 		SurveyStudentDialog::closeDialog();
+		// worker dédié à cette fonctionnalité : le terminer une fois l'interface fermée
+		QTimer::singleShot( 0, QCoreApplication::instance(), &QCoreApplication::quit );
 		return true;
 
 	default:

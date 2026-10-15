@@ -60,6 +60,9 @@ public:
 	void sendMessageToUnmanagedSessionWorker( const FeatureMessage& message );
 
 	bool isWorkerRunning( Feature::Uid featureUid );
+	// running or with messages waiting for it to be started (e.g. before the user logged in):
+	// a stop request must neither be lost then nor start a worker only to stop it
+	bool isWorkerRunningOrPending( Feature::Uid featureUid );
 
 private:
 	void acceptConnection();

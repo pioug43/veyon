@@ -337,6 +337,13 @@ bool FeatureWorkerManager::isWorkerRunning( Feature::Uid featureUid )
 
 
 
+bool FeatureWorkerManager::isWorkerRunningOrPending( Feature::Uid featureUid )
+{
+	return isWorkerRunning( featureUid ) || m_pendingSessionWorkerMessages.contains( featureUid );
+}
+
+
+
 void FeatureWorkerManager::acceptConnection()
 {
 	auto socket = m_tcpServer.nextPendingConnection();

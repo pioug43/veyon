@@ -75,7 +75,8 @@ private:
 
 	QMutex m_mutex;
 	QSet<QString> m_blocked;
-	int m_fanotifyFd{-1};
+	std::atomic_int m_fanotifyFd{-1};	// fermé soit par stopGuarding(), soit par run() en sortie inattendue
+	static constexpr useconds_t TransientErrorRetryDelayUs = 50 * 1000;
 	int m_stopFd{-1};
 	std::atomic_bool m_active{false};
 	std::atomic_bool m_healthy{false};

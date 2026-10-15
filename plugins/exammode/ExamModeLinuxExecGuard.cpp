@@ -262,6 +262,14 @@ void ExamModeLinuxExecGuard::run()
 			{
 				continue;
 			}
+			// manque passager de descripteurs ou de mémoire pour ouvrir le fd de
+			// l'événement : réessayer plutôt que de quitter (sortir laisserait le fd
+			// ouvert et chaque execve du poste attendrait une réponse)
+			if( len < 0 && ( errno == EMFILE || errno == ENFILE || errno == ENOMEM ) )
+			{
+				usleep( TransientErrorRetryDelayUs );
+				continue;
+			}
 			break;
 		}
 
@@ -341,7 +349,14 @@ void ExamModeLinuxExecGuard::run()
 	m_active = false;
 	if( m_stopping.load() == false )
 	{
-		vWarning() << "ExamMode: garde fanotify interrompue de façon inattendue";
+		vWarning() << "ExamMode: garde fanotify interrompue de façon inattendue - fail-open";
+		// plus personne ne répond aux événements de permission : fermer le fd fait
+		// autoriser par le noyau les execve en attente, au lieu de figer le poste
+		const int fd = m_fanotifyFd.exchange( -1 );
+		if( fd >= 0 )
+		{
+			close( fd );
+		}
 	}
 }
 
@@ -391,10 +406,9 @@ void ExamModeLinuxExecGuard::stopGuarding()
 
 	wait();		// attend la fin de run()
 
-	if( m_fanotifyFd >= 0 )
+	if( const int fd = m_fanotifyFd.exchange( -1 ); fd >= 0 )
 	{
-		close( m_fanotifyFd );		// fermeture => execve en attente autorisés
-		m_fanotifyFd = -1;
+		close( fd );		// fermeture => execve en attente autorisés
 	}
 	if( m_stopFd >= 0 )
 	{

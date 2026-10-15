@@ -623,7 +623,6 @@ void VncView::keyEventHandler( QKeyEvent* event )
 	case XK_Alt_R:
 	case XK_Meta_L:
 	case XK_Meta_R:
-	case XK_ISO_Level3_Shift:
 		if (pressed)
 		{
 			m_modifierKeys[key] = true;

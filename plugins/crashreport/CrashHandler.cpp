@@ -139,7 +139,7 @@ void writeReport( const QString& basePath, const QString& reason, const QString&
 	o.insert( QStringLiteral("kernel"), g_ctx.kernel );
 	o.insert( QStringLiteral("cpuArch"), g_ctx.cpuArch );
 	o.insert( QStringLiteral("buildAbi"), g_ctx.buildAbi );
-	// schéma 1 étendu (champs additionnels, ignorés par un portail plus ancien) :
+	// schéma 1 étendu (champs additionnels, ignorés par un serveur de collecte plus ancien) :
 	// de quoi regrouper les plantages par build exact et par contexte d'exécution
 	o.insert( QStringLiteral("buildCommit"), g_ctx.buildCommit );
 	o.insert( QStringLiteral("qtVersion"), g_ctx.qtVersion );

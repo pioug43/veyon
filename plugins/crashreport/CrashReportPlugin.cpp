@@ -63,29 +63,29 @@ CrashReportPlugin::CrashReportPlugin( QObject* parent ) :
 
 	// Téléversement des rapports en attente vers le portail (consolidation des
 	// plantages des postes, que le Web API du broker ne peut pas récupérer).
+	// Téléversement par les seuls composants de longue durée : un worker ou la CLI peut se
+	// terminer pendant l'envoi (thread réseau encore actif à la sortie du processus).
+	// Les rapports des autres composants, écrits dans le même spool, partent avec eux.
 	const auto uploadUrl = VeyonCore::config().crashReportUploadUrl();
-	if( uploadUrl.isEmpty() == false )
+	const auto component = VeyonCore::component();
+	const auto isLongLivedComponent = component == VeyonCore::Component::Service ||
+									  component == VeyonCore::Component::Server ||
+									  component == VeyonCore::Component::Master;
+	if( uploadUrl.isEmpty() == false && isLongLivedComponent )
 	{
 		const auto uploadToken = VeyonCore::config().crashReportUploadToken();
 
 		// en arrière-plan : le démarrage du composant (relancé justement après un crash)
-		// ne doit jamais attendre le portail
+		// ne doit jamais attendre le serveur de collecte
 		startUpload( spoolDir, uploadUrl, uploadToken );
 
-		// composants de longue durée : nouvel essai périodique, pour ne pas attendre le
-		// prochain démarrage quand le portail était injoignable (les VDI non persistantes
-		// sont souvent détruites avant)
-		const auto component = VeyonCore::component();
-		if( component == VeyonCore::Component::Service ||
-			component == VeyonCore::Component::Server ||
-			component == VeyonCore::Component::Master )
-		{
-			auto retryTimer = new QTimer( this );
-			connect( retryTimer, &QTimer::timeout, this, [spoolDir, uploadUrl, uploadToken]() {
-				startUpload( spoolDir, uploadUrl, uploadToken );
-			} );
-			retryTimer->start( UploadRetryInterval );
-		}
+		// nouvel essai périodique, pour ne pas attendre le prochain démarrage quand le
+		// serveur de collecte était injoignable (postes non persistants souvent détruits avant)
+		auto retryTimer = new QTimer( this );
+		connect( retryTimer, &QTimer::timeout, this, [spoolDir, uploadUrl, uploadToken]() {
+			startUpload( spoolDir, uploadUrl, uploadToken );
+		} );
+		retryTimer->start( UploadRetryInterval );
 	}
 
 	const auto logDir = VeyonCore::filesystem().expandPath( VeyonCore::config().logFileDirectory() );
@@ -237,11 +237,16 @@ void CrashReportPlugin::uploadPendingReports( const QString& spoolDir, const QSt
 		delete reply;
 
 		// rapport refusé tel quel (format invalide, trop volumineux) : il ne sera jamais
-		// accepté, on le met de côté pour ne pas bloquer les suivants indéfiniment
+		// accepté, on l'écarte pour ne pas bloquer les suivants indéfiniment
 		if( httpStatus == 413 || httpStatus == 422 )
 		{
-			vWarning() << "CrashReport: report" << fileInfo.fileName() << "rejected by portal - status" << httpStatus;
-			QFile::rename( fileInfo.absoluteFilePath(), fileInfo.absoluteFilePath() + QStringLiteral(".rejected") );
+			// supprimé avec ses frères (.trace/.dmp) : renommé, il échappait à la purge et au
+			// budget disque du spool, minidump de plusieurs dizaines de Mo compris
+			vWarning() << "CrashReport: report" << fileInfo.fileName() << "rejected by collector - status" << httpStatus << "- discarded";
+			for( const auto& sibling : dir.entryInfoList( { fileInfo.completeBaseName() + QStringLiteral(".*") }, QDir::Files ) )
+			{
+				QFile::remove( sibling.absoluteFilePath() );
+			}
 			continue;
 		}
 

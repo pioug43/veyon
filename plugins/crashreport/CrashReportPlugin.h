@@ -28,8 +28,9 @@
 
 // Plugin qui installe une capture de crash à l'échelle du processus dès son
 // chargement (donc dans TOUS les exécutables Veyon). Les rapports sont écrits
-// dans un dossier spool local, puis téléversés vers le portail VDI
-// (CrashReportUploadUrl) en arrière-plan, au démarrage et périodiquement.
+// dans un dossier spool local, puis téléversés vers un serveur de collecte
+// (CrashReportUploadUrl) en arrière-plan, au démarrage et périodiquement, par les
+// composants de longue durée (service, serveur, master).
 // Voir CrashHandler.
 class CrashReportPlugin : public QObject, PluginInterface
 {

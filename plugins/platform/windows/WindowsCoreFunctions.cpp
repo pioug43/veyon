@@ -352,12 +352,15 @@ QString WindowsCoreFunctions::genericUrlHandler() const
 
 QString WindowsCoreFunctions::queryDisplayDeviceName(const QScreen& screen) const
 {
-	if(screen.name().isEmpty())
+	// keep a local copy: toConstWCharArray() returns a pointer into the QString's data, which
+	// must not be a temporary since screens (and their names) may change concurrently, e.g. at logon
+	const auto screenName = screen.name();
+	if (screenName.isEmpty())
 	{
 		return {};
 	}
 
-	const auto screenDeviceName = toConstWCharArray(screen.name());
+	const auto screenDeviceName = toConstWCharArray(screenName);
 
 	const auto fallbackEnumDisplayDevices = [&]() -> QString {
 		DISPLAY_DEVICE displayDevice{};

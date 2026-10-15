@@ -68,7 +68,10 @@ bool ScreenshotFeaturePlugin::controlFeature( Feature::Uid featureUid,
 	{
 		for( const auto& controlInterface : computerControlInterfaces )
 		{
-			if( controlInterface->framebuffer().isNull() )
+			// hasValidFramebuffer() et non framebuffer().isNull() : l'image est allouée
+			// dès l'init du framebuffer (état Initialized), donc non nulle mais encore
+			// noire avant la première mise à jour complète (veyon/veyon#1067, 603158daf).
+			if( controlInterface->hasValidFramebuffer() == false )
 			{
 				QEventLoop eventLoop;
 				QTimer::singleShot( FramebufferWaitTimeout, &eventLoop, &QEventLoop::quit );
@@ -76,7 +79,7 @@ bool ScreenshotFeaturePlugin::controlFeature( Feature::Uid featureUid,
 						 &eventLoop, &QEventLoop::quit );
 				eventLoop.exec();
 
-				if( controlInterface->framebuffer().isNull() )
+				if( controlInterface->hasValidFramebuffer() == false )
 				{
 					vWarning() << "no framebuffer data received for host"
 							   << controlInterface->computer().hostAddress();

@@ -607,12 +607,14 @@ bool DeviceControlPlugin::applyUsbBlocking( bool blocked, QString* errorCode )
 
 	QSaveFile file( usbRuleFile() );
 	// ATTR{} écrit sur le périphérique de l'événement : viser SUBSYSTEM=="block"
-	// ciblerait /sys/block/sdX, qui n'a pas d'attribut « authorized ». C'est le
-	// périphérique USB lui-même qu'il faut désautoriser.
+	// ciblerait /sys/block/sdX, qui n'a pas d'attribut « authorized ». On désautorise
+	// l'INTERFACE de stockage de masse (classe 08) : ID_USB_DRIVER n'est connu que de
+	// l'interface, jamais de l'événement usb_device, si bien qu'une règle sur le
+	// périphérique ne se déclenchait pas. Une clé composite garde ses autres fonctions.
 	const auto rule = QByteArrayLiteral(
 		"# Posée par Veyon (plugin DeviceControl) - retirée à la levée du blocage\n"
-		"ACTION==\"add\", SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_device\", "
-		"ENV{ID_USB_DRIVER}==\"usb-storage\", ATTR{authorized}=\"0\"\n" );
+		"ACTION==\"add\", SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_interface\", "
+		"ATTR{bInterfaceClass}==\"08\", ATTR{authorized}=\"0\"\n" );
 	if( file.open( QIODevice::WriteOnly ) == false ||
 		file.write( rule ) != rule.size() || file.commit() == false )
 	{
@@ -653,7 +655,13 @@ bool DeviceControlPlugin::applyPrintingBlocking( bool blocked )
 	// et journalise une erreur) : s'y fier ferait croire à l'absence de service
 	// d'impression et le plugin annoncerait un blocage qui n'a pas eu lieu.
 	auto& serviceFunctions = VeyonCore::platform().serviceFunctions();
+#if defined(Q_OS_LINUX)
+	// CUPS est activé par socket et cupsd s'arrête de lui-même quand il est inactif : le
+	// service peut être « arrêté » alors que l'impression reste possible via cups.socket
+	const bool wasRunning = serviceFunctions.isRunning( service ) || linuxCupsActivationActive();
+#else
 	const bool wasRunning = serviceFunctions.isRunning( service );
+#endif
 
 	if( blocked )
 	{
@@ -679,6 +687,14 @@ bool DeviceControlPlugin::applyPrintingBlocking( bool blocked )
 	// explicite. Son destructeur n'annule ni n'attend la tâche ; c'est le
 	// destructeur du pool possédé qui s'en charge.
 	[[maybe_unused]] const auto transition = QtConcurrent::run( &m_servicePool, [service, blocked]() {
+#if defined(Q_OS_LINUX)
+		// arrêter cupsd ne suffit pas : cups.socket / cups.path le relanceraient au premier
+		// travail. Masquage --runtime (levé au redémarrage) le temps du blocage.
+		if( setLinuxCupsActivationBlocked( blocked ) == false )
+		{
+			vWarning() << "DeviceControl: (dé)masquage des unités d'activation CUPS en échec";
+		}
+#endif
 		auto& functions = VeyonCore::platform().serviceFunctions();
 		if( blocked ? functions.stop( service ) : functions.start( service ) )
 		{
@@ -689,6 +705,58 @@ bool DeviceControlPlugin::applyPrintingBlocking( bool blocked )
 
 	return true;
 }
+
+
+
+#if defined(Q_OS_LINUX)
+static QString linuxSystemctl()
+{
+	for( const auto& candidate : { QStringLiteral("/usr/bin/systemctl"), QStringLiteral("/bin/systemctl") } )
+	{
+		if( QFile::exists( candidate ) )
+		{
+			return candidate;
+		}
+	}
+	return {};
+}
+
+
+
+bool DeviceControlPlugin::linuxCupsActivationActive()
+{
+	const auto systemctl = linuxSystemctl();
+	if( systemctl.isEmpty() )
+	{
+		return false;
+	}
+	// is-active renvoie 0 si au moins une des unités listées est active
+	return QProcess::execute( systemctl, { QStringLiteral("--quiet"), QStringLiteral("is-active"),
+										   QStringLiteral("cups.socket"), QStringLiteral("cups.path") } ) == 0;
+}
+
+
+
+bool DeviceControlPlugin::setLinuxCupsActivationBlocked( bool blocked )
+{
+	const auto systemctl = linuxSystemctl();
+	if( systemctl.isEmpty() )
+	{
+		return false;
+	}
+
+	const QStringList units{ QStringLiteral("cups.socket"), QStringLiteral("cups.path") };
+	if( blocked )
+	{
+		QProcess::execute( systemctl, QStringList{ QStringLiteral("stop") } + units );
+		return QProcess::execute( systemctl, QStringList{ QStringLiteral("mask"), QStringLiteral("--runtime") } + units ) == 0;
+	}
+
+	const bool unmasked = QProcess::execute( systemctl, QStringList{ QStringLiteral("unmask"), QStringLiteral("--runtime") } + units ) == 0;
+	QProcess::execute( systemctl, QStringList{ QStringLiteral("start") } + units );
+	return unmasked;
+}
+#endif
 
 
 

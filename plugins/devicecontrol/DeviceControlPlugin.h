@@ -148,6 +148,10 @@ private:
 	bool applyAudioMute( bool muted ) const;
 	bool applyUsbBlocking( bool blocked, QString* errorCode );
 	bool applyPrintingBlocking( bool blocked );
+#if defined(Q_OS_LINUX)
+	static bool linuxCupsActivationActive();
+	static bool setLinuxCupsActivationBlocked( bool blocked );
+#endif
 	bool applyWebcamBlocking( bool blocked );
 
 	static bool examModeActive();

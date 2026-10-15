@@ -541,6 +541,13 @@ QString ComputerControlListModel::computerDisplayRole( const ComputerControlInte
  */
 QString ComputerControlListModel::computerActivityRole( const ComputerControlInterface::Pointer& controlInterface ) const
 {
+	// vignettes floutées ou masquées : le titre de la fenêtre (sujet d'un courriel, onglet
+	// du navigateur) en dirait autant que l'écran, il n'est donc pas affiché non plus
+	if( visibilityMode() != VisibilityMode::Normal )
+	{
+		return {};
+	}
+
 	const auto& sessionInfo = controlInterface->sessionInfo();
 
 	const auto idleSeconds = sessionInfo.idleSeconds;

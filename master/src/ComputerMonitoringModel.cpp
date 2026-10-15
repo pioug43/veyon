@@ -100,5 +100,17 @@ bool ComputerMonitoringModel::filterAcceptsRow( int sourceRow, const QModelIndex
 		return false;
 	}
 
+	// recherche sur la première ligne de la légende seulement (poste / utilisateur) : la
+	// seconde ligne porte l'activité (titre de fenêtre, « idle for… ») ; elle faisait
+	// correspondre la recherche d'un nom d'élève aux postes dont un titre le contenait,
+	// et réordonnait la liste au gré des changements de fenêtre
+	const auto filter = filterRegularExpression();
+	if( filter.pattern().isEmpty() == false )
+	{
+		const auto caption = sourceModel()->data( sourceModel()->index( sourceRow, filterKeyColumn(), sourceParent ),
+												  filterRole() ).toString().section( QLatin1Char('\n'), 0, 0 );
+		return caption.contains( filter );
+	}
+
 	return QSortFilterProxyModel::filterAcceptsRow( sourceRow, sourceParent );
 }

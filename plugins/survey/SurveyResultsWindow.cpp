@@ -9,6 +9,7 @@
  * version 2 of the License, or (at your option) any later version.
  */
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
@@ -93,7 +94,16 @@ void SurveyResultsWindow::appendAnswer( ComputerControlInterface::Pointer comput
 	}
 
 	auto& result = m_results[index];
-	result.answer = answer;
+	// Vrai/Faux : valeur canonique (true/false) affichée dans la langue de l'enseignant
+	if( m_questionType == int(SurveyPlugin::QuestionType::TrueFalse) &&
+		( answer == QLatin1String("true") || answer == QLatin1String("false") ) )
+	{
+		result.answer = answer == QLatin1String("true") ? tr( "True" ) : tr( "False" );
+	}
+	else
+	{
+		result.answer = answer;
+	}
 	result.answeredAt = answeredAt;
 	result.answered = true;
 
@@ -154,20 +164,30 @@ void SurveyResultsWindow::rebuildSummary()
 	}
 
 	auto options = m_options;
+	// pour Vrai/Faux, chaque option est reconnue sous sa valeur canonique (true/false,
+	// postes récents) ou sous son libellé, traduit ou non (postes plus anciens)
+	QList<QStringList> optionAliases;
 	if( m_questionType == int(SurveyPlugin::QuestionType::TrueFalse) )
 	{
-		// le dialogue élève propose ces deux réponses pour une question Vrai/Faux.
 		// Affectation explicite : avec Qt 5.15, « = { a, b } » sur un QStringList
 		// est une surcharge ambiguë.
 		options = QStringList{ tr( "True" ), tr( "False" ) };
+		optionAliases = {
+			QStringList{ QStringLiteral("true"), QStringLiteral("True"),
+						 QCoreApplication::translate( "SurveyStudentDialog", "True" ), options[0] },
+			QStringList{ QStringLiteral("false"), QStringLiteral("False"),
+						 QCoreApplication::translate( "SurveyStudentDialog", "False" ), options[1] },
+		};
 	}
 
 	QList<int> counts;
 	counts.reserve( options.count() );
 	int totalAnswers = 0;
 
-	for( const auto& option : std::as_const(options) )
+	for( int optionIndex = 0; optionIndex < options.count(); ++optionIndex )
 	{
+		const auto& option = options[optionIndex];
+		const auto aliases = optionIndex < optionAliases.count() ? optionAliases[optionIndex] : QStringList{ option };
 		int count = 0;
 		for( const auto& result : std::as_const(m_results) )
 		{
@@ -180,7 +200,7 @@ void SurveyResultsWindow::rebuildSummary()
 			const auto answers = result.answer.split( QLatin1Char(','), Qt::SkipEmptyParts );
 			for( const auto& answer : answers )
 			{
-				if( answer.trimmed().compare( option, Qt::CaseInsensitive ) == 0 )
+				if( aliases.contains( answer.trimmed(), Qt::CaseInsensitive ) )
 				{
 					++count;
 					break;

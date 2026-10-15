@@ -17,6 +17,10 @@
 QPointer<SurveyStudentDialog> SurveyStudentDialog::s_instance = nullptr;
 
 
+static constexpr auto AnswerValueProperty = "veyonAnswerValue";
+
+
+
 SurveyStudentDialog::SurveyStudentDialog( const FeatureMessage& message, VeyonWorkerInterface* worker,
 										  QWidget* parent ) :
 	QDialog( parent, Qt::WindowStaysOnTopHint ),
@@ -70,6 +74,10 @@ SurveyStudentDialog::SurveyStudentDialog( const FeatureMessage& message, VeyonWo
 	{
 		auto* trueButton = new QRadioButton( tr("True"), ui->scrollAreaWidgetContents );
 		auto* falseButton = new QRadioButton( tr("False"), ui->scrollAreaWidgetContents );
+		// valeur canonique transmise au maître : le libellé est traduit dans la langue de
+		// l'élève, que le maître ne connaît pas (« Vrai » ne correspondait pas à « True »)
+		trueButton->setProperty( AnswerValueProperty, QStringLiteral("true") );
+		falseButton->setProperty( AnswerValueProperty, QStringLiteral("false") );
 		ui->contentLayout->addWidget( trueButton );
 		ui->contentLayout->addWidget( falseButton );
 		m_radioButtons.append( trueButton );
@@ -127,7 +135,8 @@ void SurveyStudentDialog::onSubmitClicked()
 		{
 			if( radioButton->isChecked() )
 			{
-				answer = radioButton->text();
+				const auto value = radioButton->property( AnswerValueProperty ).toString();
+				answer = value.isEmpty() ? radioButton->text() : value;
 				break;
 			}
 		}

@@ -735,11 +735,11 @@ void DemoFeaturePlugin::watchDemoClient( const ComputerControlInterface::Pointer
 		it->wasConnected = connected;
 	} );
 
-	m_demoClientWatches.insert( controlInterface, watch );
-
-	connect( controlInterface, &QObject::destroyed, this, [this, controlInterface]() {
+	watch.destroyedConnection = connect( controlInterface, &QObject::destroyed, this, [this, controlInterface]() {
 		m_demoClientWatches.remove( controlInterface );
-	}, Qt::UniqueConnection );
+	} );
+
+	m_demoClientWatches.insert( controlInterface, watch );
 }
 
 
@@ -750,6 +750,7 @@ void DemoFeaturePlugin::unwatchDemoClient( const ComputerControlInterface::Point
 	if( it != m_demoClientWatches.end() )
 	{
 		disconnect( it->connection );
+		disconnect( it->destroyedConnection );
 		m_demoClientWatches.erase( it );
 	}
 }

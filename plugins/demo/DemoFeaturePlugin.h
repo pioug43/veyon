@@ -175,6 +175,7 @@ private:
 		FeatureMessage startMessage;
 		bool wasConnected{false};
 		QMetaObject::Connection connection;
+		QMetaObject::Connection destroyedConnection;
 	};
 	QHash<ComputerControlInterface *, DemoClientWatch> m_demoClientWatches{};
 

@@ -186,6 +186,7 @@ public:
 private:
 	void runInWorkerThread(const std::function<void()>& functor) const;
 	void runInWorkerThreadNonBlocking(const std::function<void()>& functor) const;
+	void promoteToLiveForInput( const ComputerControlInterface::Pointer& controlInterface ) const;
 	static void runInCoreThread(const std::function<void()>& functor);
 
 	template<class T>

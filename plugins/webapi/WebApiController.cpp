@@ -361,7 +361,9 @@ WebApiController::Response WebApiController::getFramebuffer( const Request& requ
 			connection->markLiveFramebufferRequest();
 			if( controlInterface->updateMode() != ComputerControlInterface::UpdateMode::Live )
 			{
-				runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
+				// non bloquant : le LockingPointer de la connexion est tenu ici, et le thread
+				// worker prend ce même verrou (checkConnection) — attendre le worker interbloquait
+				runInWorkerThreadNonBlocking([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
 			}
 		}
 		else if( connection->liveModePromotedByFramebuffer() &&
@@ -369,7 +371,7 @@ WebApiController::Response WebApiController::getFramebuffer( const Request& requ
 				 connection->liveFramebufferRequestExpired() )
 		{
 			connection->clearLiveModePromotion();
-			runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Basic); });
+			runInWorkerThreadNonBlocking([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Basic); });
 		}
 	}
 
@@ -474,6 +476,15 @@ WebApiController::Response WebApiController::sendPointerEvent( const Request& re
 		return Error::InvalidConnection;
 	}
 	const auto controlInterface = connection->controlInterface();
+
+	// connexion prête avant le contrôle des bornes : pendant une reconnexion le framebuffer
+	// est vide et toute coordonnée serait refusée en 400 au lieu de 503 (réessayable)
+	const auto vncConnection = controlInterface->vncConnection();
+	if( vncConnection == nullptr || vncConnection->isConnected() == false )
+	{
+		return Error::ConnectionNotReady;
+	}
+
 	const auto framebufferSize = controlInterface->framebuffer().size();
 
 	if( xValid == false || yValid == false || buttonMaskValid == false ||
@@ -483,13 +494,7 @@ WebApiController::Response WebApiController::sendPointerEvent( const Request& re
 		return Error::InvalidData;
 	}
 
-	const auto vncConnection = controlInterface->vncConnection();
-	if( vncConnection == nullptr || vncConnection->isConnected() == false )
-	{
-		return Error::ConnectionNotReady;
-	}
-
-	runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
+	promoteToLiveForInput( controlInterface );
 	vncConnection->mouseEvent(x, y, buttonMask);
 
 	return {};
@@ -528,7 +533,7 @@ WebApiController::Response WebApiController::sendKeyEvent( const Request& reques
 		return Error::ConnectionNotReady;
 	}
 
-	runInWorkerThread([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
+	promoteToLiveForInput( controlInterface );
 	vncConnection->keyEvent(static_cast<VncConnection::KeyCode>(keyCode),
 						request.data.value(k2s(Key::Pressed)).toBool());
 
@@ -1116,6 +1121,22 @@ QString WebApiController::errorString( WebApiController::Error error )
 	}
 
 	return {};
+}
+
+
+
+void WebApiController::promoteToLiveForInput( const ComputerControlInterface::Pointer& controlInterface ) const
+{
+	// une prise de main par les endpoints input/* rafraîchit l'écran en continu, mais :
+	// - seulement au besoin : chaque setUpdateMode() renvoie SetFormatAndEncodings et
+	//   MonitoringMode au poste, auparavant à CHAQUE mouvement de souris ;
+	// - sans attendre le worker : le verrou de la connexion est tenu par l'appelant et le
+	//   worker le prend aussi (checkConnection), d'où un interblocage de toute la WebAPI.
+	// Volontairement sans markLiveFramebufferRequest() (voir WebApiConnection.h).
+	if( controlInterface->updateMode() != ComputerControlInterface::UpdateMode::Live )
+	{
+		runInWorkerThreadNonBlocking([controlInterface] { controlInterface->setUpdateMode(ComputerControlInterface::UpdateMode::Live); });
+	}
 }
 
 

@@ -40,6 +40,7 @@
 
 #include <limits>
 
+#include "RegistryPolicyGuard.h"
 #include "CryptoCore.h"
 #include "ExamModeFeaturePlugin.h"
 #include "ExamModeLinuxExecGuard.h"
@@ -2417,6 +2418,14 @@ bool ExamModeFeaturePlugin::applyUsbBlocking()
 		vWarning() << "ExamMode: restauration USB précédente incomplète; nouveau blocage refusé";
 		return false;
 	}
+
+	// Le blocage USB de DeviceControl porte sur les mêmes valeurs : le lever d'abord
+	// (restauration de SES valeurs d'origine) pour que l'examen enregistre les vraies
+	// valeurs initiales. Sinon l'arbitrage de DeviceControl, qui s'efface dès qu'un examen
+	// est détecté, restaurait « Start=3 » par-dessus le blocage de l'examen : USB réactivé
+	// en plein examen. DeviceControl ne trouve ensuite plus d'état et ne met à jour que
+	// son statut (EXAM_MODE_ACTIVE).
+	RegistryPolicyGuard( QStringLiteral("devicecontrol-usb"), QStringLiteral("ExamMode") ).remove();
 
 	struct UsbPolicy { QString key; QString name; QString data; };
 	const QList<UsbPolicy> policies{

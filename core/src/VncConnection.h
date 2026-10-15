@@ -197,6 +197,7 @@ private:
 		TriggerFramebufferUpdate = 0x80,
 		SkipFramebufferUpdates = 0x100,
 		PresentCompleteUpdates = 0x200,
+		QualityChanged = 0x400,
 	};
 
 	~VncConnection() override;
@@ -220,6 +221,7 @@ private:
 	int incrementalFramebufferUpdateTimeout() const;
 
 	void updateEncodingSettingsFromQuality();
+	void applyQualityChange();
 
 	void sendEvents();
 
@@ -256,7 +258,7 @@ private:
 
 	// connection parameters and data
 	rfbClient* m_client;
-	VncConnectionConfiguration::Quality m_quality = VncConnectionConfiguration::Quality::Highest;
+	std::atomic<VncConnectionConfiguration::Quality> m_quality{VncConnectionConfiguration::Quality::Highest};
 	QString m_host;
 	int m_port;
 	int m_defaultPort{-1};
